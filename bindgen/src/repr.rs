@@ -16,15 +16,16 @@
 
 /// Exports the backend puts on the module it emits.
 ///
-/// `LambdaANF_to_Wasm.v:553-570`. Note the table is *not* among them, which is
-/// why the build patches it in before `wasm-merge`.
+/// `LambdaANF_to_Wasm.v:553-570`. The table is among them, so the build links
+/// the adapter against the backend's own output and rewrites nothing --- see
+/// `TODO.md#table-export`.
 pub mod exports {
     pub const MEMORY: &str = "memory";
     pub const MEM_PTR: &str = "mem_ptr";
     pub const RESULT: &str = "result";
     pub const OUT_OF_MEM: &str = "out_of_mem";
     pub const MAIN_FUNCTION: &str = "main_function";
-    /// Added by `patch-table`, not by the backend.
+    /// What the adapter calls the compiled closures through.
     pub const TABLE: &str = "__indirect_function_table";
 }
 

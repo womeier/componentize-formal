@@ -46,7 +46,7 @@ section.
 | `E-EXPORT-INTERFACE` | `export some:pkg/iface` | [out of scope](#exported-interfaces) |
 | — | verified glue | [research project](#verified-glue) |
 
-## No silent failure
+## <a id="no-silent-failure"></a>No silent failure
 
 A wrong adapter does not announce itself: it reads the wrong bytes and
 `wasmtime` hands back plausible garbage. So the gate is deliberately one-sided.
@@ -197,14 +197,14 @@ Catches a mistake in `repr.rs`, not the backend moving underneath it.
 [`checks/representation.py`](checks/representation.py) compiles
 [`exports.v`](checks/rocq/exports.v) with the real CertiRocq and reads back
 everything visible without running the module — the five export names present,
-the table absent (why the build patches it in), no imports (the premise of both
+the table present (the adapter links through it), no imports (the premise of both
 `E-IMPORT` and the instantiation proof), one memory (so `wasm-merge` needs no
 `--enable-multimemory`), and type index *n* taking *n* `i32`s. Names come out
 of `repr.rs` itself, so a rename there cannot leave it testing the old one.
 
 **2 — the backend's behaviour, phase 1.** The rest needs the module to *run*:
 one case per representation, each a Rocq definition plus a world through the
-whole pipeline — `rocq c`, patch the table, `wasm-merge`, `component embed`,
+whole pipeline — `rocq c`, `wasm-merge`, `component embed`,
 `component new`, `wasmtime run --invoke` — asserting the value returned:
 
 | Case | Pins |
@@ -214,7 +214,7 @@ whole pipeline — `rocq c`, patch the table, `wasm-merge`, `component embed`,
 | `fun n => n` at `u64`, with 0 and 2⁶³−1 | the boxed primitive int, and the range guard |
 | a function returning `None`, and one returning `Some` | `option`'s per-class ordinals |
 | a deliberately allocating function | the out-of-memory channel actually firing |
-| one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged |
+| one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged; lands with the reset, not before |
 | two and three exports | `MkExports` field offsets (phase 2) |
 | `f64` round-trip | the boxed float, once `wasm-prim-floats` lands (phase 4) |
 
@@ -235,6 +235,27 @@ invalidate every constant in `repr.rs` and the adapter built on them — and the
 canonical ABI is linear-memory based anyway, so components and WasmGC do not yet
 compose. Not a near-term option, but the reason `repr.rs` is one file.
 
+### <a id="table-export"></a>The backend exports the table
+
+The adapter reaches the compiled closures through
+`__indirect_function_table`, and the backend exports it beside `memory` and
+`main_function` --- the `exports` list in `LambdaANF_to_Wasm.v:553-570`, where
+a `MED_table 0%N` entry sits next to the `MED_mem 0%N` one.
+
+Earlier it did not, and the build patched the export in between `rocq c` and
+`wasm-merge` with a `sed` line --- the one step of the pipeline that rewrote
+the backend's output instead of wrapping it, and so the one step that could
+make the linked module differ from the module the backend proved correct.
+Taking it out means no `patch-table` subcommand has to exist, and the
+generated build rules link against the backend's own bytes.
+
+**This is an assumption about the CertiRocq being compiled against**, not
+something the generator can check at run time, so it is checked where
+assumptions about the backend belong: `checks/representation.py` reads the
+emitted module and fails if the table is not exported, naming the pin as the
+thing to move. A CertiRocq predating the export cannot be used --- the adapter
+has nothing to link through.
+
 ---
 
 ## <a id="heap-reset"></a>Resetting the heap between calls
@@ -254,9 +275,18 @@ the largest single call, rather than the sum of all calls.
 Why that should be sound: the region below the snapshot is **write-once**. The
 generated code only ever writes cells it has just allocated, so if
 `main_function` returns at `mem_ptr = S`, every later store is at ≥ S and
-`[0, S)` is frozen. Re-entrancy would break it and cannot happen — no
-[imports](#imports) means nothing can call back in mid-call. Both are claims to
-pin in layer 2 of [representation conformance](#representation), not to assume.
+`[0, S)` is frozen. Re-entrancy would break it, and today it cannot happen ---
+no [imports](#imports) means nothing can call back in mid-call. Both are claims
+to pin in layer 2 of [representation conformance](#representation), not to
+assume.
+
+**The re-entrancy half expires when imports land.** Once the compiled module
+can call out through an adapter wrapper, the host can be on the stack while a
+call is still in flight, and that wrapper allocates in order to lower its
+arguments. Write-once survives --- those allocations are above `S` like any
+other --- but the timing question below does not: a reset on entry to a call is
+wrong while an outer call is live. Whatever answer that question gets has to be
+re-derived for a re-entrant stack, not inherited.
 
 Three things to settle:
 
@@ -272,6 +302,14 @@ Three things to settle:
   snapshot and `glob_out_of_mem` set. Resetting and clearing the flag would
   make `out-of-memory` a per-call failure instead of a poisoned instance —
   worth having, and it rests on the same frozen-region claim.
+
+**Deliberately not in the first generated adapter.** Deferring it costs calls,
+not correctness: without the reset a component answers fewer times before
+`out-of-memory`, and that limit arrives through the
+[failure channel](#failure-channel) like any other failure — a caller is told,
+never handed a wrong answer. So it is a capacity improvement resting on a
+frozen-region claim that layer 2 has to pin anyway, and it can land after the
+first component runs end to end rather than blocking it.
 
 ---
 
@@ -465,6 +503,36 @@ needs the lift/lower pair in the mirror direction as well.
 
 Imported *types*, which is what a `use` statement produces, are already fine:
 they are just names, and the gate lets them through.
+
+**Nor can the emitted module import its memory**, which is the tempting fix
+when the two core modules look like they depend on each other. Core modules
+inside a component may import memories from other core instances, so unlike at
+the component boundary --- where memory is not something a component can import
+at all --- this one is expressible. It is still ruled out twice over.
+
+`mod_imports := []` is the same premise as above: a module given a memory
+import is not the module the instantiation proof is about, and the store
+invariants are stated over a memory the module itself defines.
+
+And it would *create* the cycle rather than remove it. The adapter already
+imports `memory`, `mem_ptr`, `result`, `out_of_mem`, `main_function` and the
+table from the compiled module; having the compiled module import its memory
+back from the adapter makes each need the other, and a component's instance
+graph has to be acyclic. The shape that would work is a third module owning
+nothing but the memory, depending on no one and exported to both --- which buys
+nothing here, because `wasm-merge` runs before `component embed` and the merged
+module owns the memory, the globals, the table and the adapter's functions with
+no imports left to resolve.
+
+Nor does the direction need to stay one-way once there *are* imported
+functions, which is the case that looks like it should cycle: the compiled
+module imports the lowered wrapper from the adapter while the adapter imports
+the memory and globals from the compiled module. `wasm-merge` is a link step,
+so it resolves each import against the other module's exports and both edges
+disappear --- checked, with that exact pair of stand-in modules: the merge
+succeeds and the only import left is the host function, which is what
+`component new` satisfies from the world's imports. So imports cost
+`instantiation.v` and the mirror-direction lift/lower, not the linking shape.
 
 ### <a id="frontends"></a>The Lean frontend
 

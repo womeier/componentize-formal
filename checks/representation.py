@@ -33,10 +33,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Constants in repr.rs's `exports` module that name something the backend puts
-# on the module, and the one it deliberately does not.
-BACKEND_EXPORTS = ["MEMORY", "MEM_PTR", "RESULT", "OUT_OF_MEM", "MAIN_FUNCTION"]
-PATCHED_IN_EXPORT = "TABLE"
+# Constants in repr.rs's `exports` module, each naming something the backend
+# puts on the module. TABLE is the newest: see TODO.md#table-export.
+BACKEND_EXPORTS = [
+    "MEMORY",
+    "MEM_PTR",
+    "RESULT",
+    "OUT_OF_MEM",
+    "MAIN_FUNCTION",
+    "TABLE",
+]
 
 # `CertiRocq Compile Wasm -file "conformance"` in the .v decides this.
 MODULE_STEM = "conformance"
@@ -63,7 +69,7 @@ def declared_names(repr_rs: Path) -> dict[str, str]:
             raise Mismatch(f"{repr_rs}: `pub const {name}` is defined twice")
         names[name] = value
 
-    missing = [c for c in [*BACKEND_EXPORTS, PATCHED_IN_EXPORT] if c not in names]
+    missing = [c for c in BACKEND_EXPORTS if c not in names]
     if missing:
         raise Mismatch(
             f"{repr_rs} no longer defines {', '.join(missing)}. "
@@ -134,18 +140,20 @@ def check(names: dict[str, str], wat: str) -> list[str]:
 
     for const in BACKEND_EXPORTS:
         if names[const] not in exported:
-            problems.append(
-                f'the backend no longer exports "{names[const]}" '
-                f"(repr.rs {const}); it exports {', '.join(sorted(exported))}"
-            )
-
-    # repr.rs says the table is the one export the backend does *not* emit,
-    # which is the entire reason the build patches it in before wasm-merge.
-    if names[PATCHED_IN_EXPORT] in exported:
-        problems.append(
-            f'the backend now exports "{names[PATCHED_IN_EXPORT]}" itself, so '
-            f"patching it in would duplicate it (repr.rs {PATCHED_IN_EXPORT})"
-        )
+            # The table is the one that can be missing because the backend is
+            # older than the assumption, rather than because it was renamed.
+            if const == "TABLE":
+                problems.append(
+                    f'the backend does not export "{names[const]}", which the '
+                    "adapter links the compiled closures through. A CertiRocq "
+                    "predating that export cannot be used: move the nixpkgs "
+                    "pin forward -- see TODO.md#table-export"
+                )
+            else:
+                problems.append(
+                    f'the backend no longer exports "{names[const]}" '
+                    f"(repr.rs {const}); it exports {', '.join(sorted(exported))}"
+                )
 
     # `mod_imports := []` is baked into the instantiation proof, and is what
     # the E-IMPORT rejection rests on.
@@ -225,7 +233,7 @@ def main() -> int:
 
     checked = ", ".join(names[c] for c in BACKEND_EXPORTS)
     print(f"repr.rs agrees with CertiRocq: {checked}, no imports, one memory,")
-    print("the table absent, and type index n taking n i32s.")
+    print("and type index n taking n i32s.")
     return 0
 
 
