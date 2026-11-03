@@ -1,8 +1,8 @@
 [package]
-name = "rocq-component-bindgen"
+name = "componentize-formal"
 version = "0.1.0"
 edition = "2021"
-description = "Generate Rocq interfaces and canonical-ABI glue for CertiRocq's Wasm backend from a WIT world"
+description = "Turn a WIT world into a Wasm component backed by CertiRocq's verified Wasm backend"
 
 [dependencies]
 anyhow = "1"

@@ -1,9 +1,15 @@
-# CertiRocq components
+# componentize-formal
 
-[![CI](https://github.com/womeier/componentize-rocq/actions/workflows/ci.yml/badge.svg)](https://github.com/womeier/componentize-rocq/actions/workflows/ci.yml)
+[![CI](https://github.com/womeier/componentize-formal/actions/workflows/ci.yml/badge.svg)](https://github.com/womeier/componentize-formal/actions/workflows/ci.yml)
 
-Turn a WIT world into a Wasm component backed by CertiRocq's verified Wasm
-backend.
+Turn a WIT world into a Wasm component whose implementation you write in a
+proof assistant, compiled by CertiRocq's verified Wasm backend. Rocq today;
+the frontend is a [seam](TODO.md#frontends), not a baked-in assumption.
+
+The *formal* in the name is about where the code comes from, not a claim that
+the component is verified end to end: the backend's compilation is proved
+correct, the canonical-ABI glue this tool generates is
+[trusted](TODO.md#verified-glue).
 
 Given `world.wit`, the generator will emit
 
@@ -123,15 +129,15 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 
 `nix develop` provides Rocq, CertiRocq, `wasm-tools`, `binaryen` (`wasm-merge`),
 `wasmtime`, and a Rust toolchain; `nix develop .#bindgen` is the same without
-the Rocq package set, for working on the generator alone. `nix build .#bindgen`
-builds the generator.
+the Rocq package set, for working on the generator alone.
+`nix build .#componentize-formal` builds the generator.
 
 `nix flake check` runs the whole gate, and CI does nothing but run that command,
 so a green checkout is a green branch:
 
 | Check | |
 | --- | --- |
-| `bindgen` | the generator built and its tests run in the sandbox |
+| `componentize-formal` | the generator built and its tests run in the sandbox |
 | `clippy`, `fmt` | `clippy -D warnings`, `cargo fmt --check` |
 | `abi-version` | `wit-parser`'s version must match the `wasm-tools` that ships, since they must compute the same canonical-ABI layout |
 | `representation` | compiles a Rocq function with the real CertiRocq and checks the emitted module against every claim in `repr.rs` |

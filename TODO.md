@@ -1,6 +1,6 @@
 # Deferred work
 
-What `rocq-component-bindgen` deliberately does not do, and what each item would
+What `componentize-formal` deliberately does not do, and what each item would
 cost. Nothing here needs to work for the tool to be useful; the point is that a
 WIT world using any of it is **rejected with a clear message** instead of
 producing an adapter that misreads memory.
@@ -10,7 +10,7 @@ The gate lives in [`bindgen/src/support.rs`](bindgen/src/support.rs)
 section below:
 
 ```
-$ rocq-component-bindgen check --wit world.wit
+$ componentize-formal check --wit world.wit
 error[E-LIST]: list (list<u32>) is not supported
   --> export total: param `xs`
   = out of scope: needs cabi_realloc and cons-cell walking in both directions, ...

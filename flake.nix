@@ -1,5 +1,5 @@
 {
-  description = "CertiRocq components";
+  description = "componentize-formal";
 
   inputs = {
     # Pinned to the exact nixpkgs revision that coq-nix-toolbox pins
@@ -84,7 +84,7 @@
       };
 
       bindgenFor = pkgs: pkgs.rustPlatform.buildRustPackage {
-        pname = "rocq-component-bindgen";
+        pname = "componentize-formal";
         version = "0.1.0";
 
         src = bindgenSrc;
@@ -92,7 +92,7 @@
 
         cargoLock.lockFile = ./bindgen/Cargo.lock;
         meta.description =
-          "Generate Rocq interfaces and canonical-ABI glue for CertiRocq's Wasm backend from a WIT world";
+          "Turn a WIT world into a Wasm component backed by CertiRocq's verified Wasm backend";
       };
     in {
       packages = forAllSystems (pkgs: rec {
@@ -100,7 +100,7 @@
         metarocq = (rocqPkgs pkgs).metarocq;          # 1.5.1-9.1
         compcert = (rocqPkgs pkgs).compcert;          # 3.17
 
-        bindgen = bindgenFor pkgs;
+        componentize-formal = bindgenFor pkgs;
 
         default = certirocq;
       });
@@ -113,7 +113,7 @@
         # Building the package runs the 13 integration and 7 unit tests in the
         # sandbox, which is stricter than `cargo test` in a checkout: it has
         # caught files missing from `bindgenSrc` that the checkout still had.
-        inherit bindgen;
+        componentize-formal = bindgen;
 
         clippy = bindgen.overrideAttrs (old: {
           pname = "${old.pname}-clippy";
@@ -125,7 +125,7 @@
 
         # `cargo fmt` rather than bare `rustfmt` so the edition comes from
         # Cargo.toml instead of being restated here.
-        fmt = pkgs.runCommand "rocq-component-bindgen-fmt"
+        fmt = pkgs.runCommand "componentize-formal-fmt"
           { nativeBuildInputs = [ pkgs.cargo pkgs.rustfmt ]; } ''
             cp -r ${bindgenSrc}/bindgen crate
             chmod -R u+w crate

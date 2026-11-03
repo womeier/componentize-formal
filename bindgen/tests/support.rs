@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use rocq_component_bindgen::{config::Oom, resolve_world, support};
+use componentize_formal::{config::Oom, resolve_world, support};
 
 fn fixture(kind: &str, name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -146,7 +146,7 @@ fn reports_every_offending_position() {
 /// through the error channel rather than as a warning.
 #[test]
 fn a_u64_parameter_is_a_failure_mode() {
-    use rocq_component_bindgen::resolve_world;
+    use componentize_formal::resolve_world;
     use wit_parser::WorldItem;
 
     let path = fixture("good", "scalars.wit");
@@ -252,7 +252,7 @@ fn trapping_accepts_a_bare_result_type() {
 /// The shipped package resolves without the world vendoring a deps/ tree.
 #[test]
 fn the_shipped_abi_package_is_available() {
-    assert!(rocq_component_bindgen::ABI_WIT.contains("package certirocq:abi;"));
+    assert!(componentize_formal::ABI_WIT.contains("package certirocq:abi;"));
     // good/scalars.wit `use`s it; resolving at all proves it is reachable.
     assert!(report(&fixture("good", "scalars.wit")).is_ok());
 }
@@ -262,7 +262,7 @@ fn the_shipped_abi_package_is_available() {
 /// precisely the silent failure this tool is built to avoid.
 #[test]
 fn only_the_rocq_frontend_is_implemented() {
-    use rocq_component_bindgen::config::Frontend;
+    use componentize_formal::config::Frontend;
 
     assert_eq!(Frontend::default(), Frontend::Rocq);
     assert!(Frontend::Rocq.ensure_supported().is_ok());
@@ -283,7 +283,7 @@ fn only_the_rocq_frontend_is_implemented() {
 /// The frontend is selectable from the config file, not only the flag.
 #[test]
 fn the_config_selects_a_frontend() {
-    use rocq_component_bindgen::config::{Config, Frontend};
+    use componentize_formal::config::{Config, Frontend};
 
     let dir = std::env::temp_dir().join(format!("bindgen-frontend-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

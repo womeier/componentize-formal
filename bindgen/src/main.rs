@@ -10,11 +10,11 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
-use rocq_component_bindgen::{config, config::Frontend, config::Oom, support};
+use componentize_formal::{config, config::Frontend, config::Oom, support};
 use wit_parser::Resolve;
 
 #[derive(Parser)]
-#[command(name = "rocq-component-bindgen", version, about, max_term_width = 100)]
+#[command(name = "componentize-formal", version, about, max_term_width = 100)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -194,6 +194,6 @@ fn resolve_world(input: &Input) -> Result<(Resolve, wit_parser::WorldId, Option<
         .clone()
         .or_else(|| cfg.as_ref().and_then(|c| c.world.clone()));
 
-    let (resolve, world) = rocq_component_bindgen::resolve_world(&wit, world_name.as_deref())?;
+    let (resolve, world) = componentize_formal::resolve_world(&wit, world_name.as_deref())?;
     Ok((resolve, world, cfg))
 }
