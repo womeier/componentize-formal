@@ -1,5 +1,7 @@
 # CertiRocq components
 
+[![CI](https://github.com/womeier/componentize-rocq/actions/workflows/ci.yml/badge.svg)](https://github.com/womeier/componentize-rocq/actions/workflows/ci.yml)
+
 Turn a WIT world into a Wasm component backed by CertiRocq's verified Wasm
 backend.
 
@@ -111,6 +113,17 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
+| [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
+
+## Building
 
 `nix develop` provides Rocq, CertiRocq, `wasm-tools`, `binaryen` (`wasm-merge`),
-`wasmtime`, and a Rust toolchain. `nix build .#bindgen` builds the generator.
+`wasmtime`, and a Rust toolchain; `nix develop .#bindgen` is the same without
+the Rocq package set, for working on the generator alone. `nix build .#bindgen`
+builds the generator.
+
+`nix flake check` runs the whole gate: the generator's tests in the Nix sandbox,
+`clippy -D warnings`, `cargo fmt --check`, and the pin tying `wit-parser` to
+`wasm-tools` — see [representation conformance](TODO.md#representation) for why
+that one matters. CI does nothing but run that command, so a green checkout is a
+green branch.

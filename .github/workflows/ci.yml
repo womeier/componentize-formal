@@ -1,0 +1,42 @@
+# What CI enforces lives in flake.nix, under `checks`. This file only installs
+# Nix and runs them, so `nix flake check` in a checkout is the same gate as CI
+# and cannot drift from it. To add a check, add it there -- not here.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  # Covers pull requests from forks, whose pushes don't trigger the event above.
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # Same-repo pull requests are already covered by their push event.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          # The substituters and their keys are declared in flake.nix's
+          # nixConfig; accepting it keeps them stated once.
+          extra_nix_config: accept-flake-config = true
+
+      # Evaluation only, every system in the flake: catches an eval error on
+      # darwin or aarch64 that the build below would never reach.
+      - run: nix flake check --all-systems --no-build
+
+      # Builds the checks for this system: the generator and its test suite in
+      # the sandbox, clippy, rustfmt, and the wit-parser/wasm-tools pin.
+      - run: nix flake check --print-build-logs

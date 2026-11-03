@@ -1,0 +1,45 @@
+# flake.nix claims the pinned nixpkgs revision makes CertiRocq, MetaRocq and
+# CompCert cache hits from the coq-community caches, so nothing heavy is ever
+# built locally. This asserts that claim stays true -- a cache that is garbage
+# collected upstream turns `nix develop` into an hours-long MetaRocq build, and
+# the first person to find out should not be a contributor.
+#
+# Kept out of `nix flake check` (and so out of CI on every push) because it
+# substitutes gigabytes that nothing in the generator needs yet.
+name: Pin
+
+on:
+  schedule:
+    # Mondays, 04:17 UTC.
+    - cron: '17 4 * * 1'
+  push:
+    paths:
+      - flake.nix
+      - flake.lock
+      - .github/workflows/pin.yml
+  workflow_dispatch:
+
+concurrency:
+  group: pin-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  substitutable:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: accept-flake-config = true
+
+      # --max-jobs 0 forbids local building, so a cache miss fails in seconds
+      # instead of compiling MetaRocq for hours.
+      - run: nix build --max-jobs 0 --print-build-logs .#certirocq .#metarocq .#compcert
+
+      - name: The dev shell is substitutable too
+        run: nix develop --max-jobs 0 --command rocq --version

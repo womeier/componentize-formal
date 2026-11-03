@@ -1,0 +1,5 @@
+# `nix build` output links
+/result
+/result-*
+# cargo build artefacts
+/bindgen/target/

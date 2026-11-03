@@ -27,16 +27,20 @@
 
   outputs = { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      lib = nixpkgs.lib;
+
+      # No x86_64-darwin: nixpkgs 26.11, which the pin above is, dropped it, so
+      # claiming it here only produces an evaluation error on an Intel Mac.
+      systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
 
       # CertiRocq pulls in CompCert, whose license (inria-compcert) is unfree in
       # nixpkgs, so it has to be allowed explicitly.
       pkgsFor = system: import nixpkgs {
         inherit system;
-        config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "compcert";
+        config.allowUnfreePredicate = pkg: lib.getName pkg == "compcert";
       };
 
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (pkgsFor system));
+      forAllSystems = f: lib.genAttrs systems (system: f (pkgsFor system));
 
       # At this pin the Rocq package set still lives under `coqPackages`
       # (`rocqPackages` there has no CertiRocq attribute).
@@ -46,44 +50,124 @@
       # binaryen supplies wasm-merge; both come from the pin above, so they are
       # cache hits rather than builds. bindgen is pinned against the wit-parser
       # version matching this wasm-tools, so WIT parsing and canonical-ABI
-      # layout are literally the same code the component assembly uses.
+      # layout are literally the same code the component assembly uses --
+      # `checks.abi-version` holds that pinning to its word.
       componentTools = pkgs: [
         pkgs.wasm-tools   # 1.254.0
         pkgs.binaryen     # 129, for wasm-merge
         pkgs.wasmtime     # 47.0.2
       ];
+
+      rustTools = pkgs: [
+        pkgs.cargo        # 1.97.0
+        pkgs.rustc
+        pkgs.clippy
+        pkgs.rustfmt
+      ];
+
+      # TODO.md comes along because the test suite asserts that every rejection
+      # code the gate can emit has a section there. Paths are listed explicitly
+      # so the build doesn't rebuild on unrelated changes.
+      bindgenSrc = lib.fileset.toSource {
+        root = ./.;
+        fileset = lib.fileset.unions [
+          ./bindgen/Cargo.toml
+          ./bindgen/Cargo.lock
+          ./bindgen/src
+          ./bindgen/tests
+          ./bindgen/wit          # the shipped certirocq:abi package
+          ./TODO.md
+        ];
+      };
+
+      bindgenFor = pkgs: pkgs.rustPlatform.buildRustPackage {
+        pname = "rocq-component-bindgen";
+        version = "0.1.0";
+
+        src = bindgenSrc;
+        sourceRoot = "source/bindgen";
+
+        cargoLock.lockFile = ./bindgen/Cargo.lock;
+        meta.description =
+          "Generate Rocq interfaces and canonical-ABI glue for CertiRocq's Wasm backend from a WIT world";
+      };
     in {
       packages = forAllSystems (pkgs: rec {
         certirocq = (rocqPkgs pkgs).CertiRocq;        # 0.9.1+9.1, Rocq 9.1.1
         metarocq = (rocqPkgs pkgs).metarocq;          # 1.5.1-9.1
         compcert = (rocqPkgs pkgs).compcert;          # 3.17
 
-        bindgen = pkgs.rustPlatform.buildRustPackage {
-          pname = "rocq-component-bindgen";
-          version = "0.1.0";
-
-          # TODO.md comes along because the test suite asserts that every
-          # rejection code the gate can emit has a section there. Paths are
-          # listed explicitly so the build doesn't rebuild on unrelated changes.
-          src = pkgs.lib.fileset.toSource {
-            root = ./.;
-            fileset = pkgs.lib.fileset.unions [
-              ./bindgen/Cargo.toml
-              ./bindgen/Cargo.lock
-              ./bindgen/src
-              ./bindgen/tests
-              ./bindgen/wit          # the shipped certirocq:abi package
-              ./TODO.md
-            ];
-          };
-          sourceRoot = "source/bindgen";
-
-          cargoLock.lockFile = ./bindgen/Cargo.lock;
-          meta.description =
-            "Generate Rocq interfaces and canonical-ABI glue for CertiRocq's Wasm backend from a WIT world";
-        };
+        bindgen = bindgenFor pkgs;
 
         default = certirocq;
+      });
+
+      # Everything CI enforces lives here, so `nix flake check` locally and CI
+      # run the same thing. Deliberately excludes the Rocq package set: these
+      # all finish in seconds, while CertiRocq is a multi-gigabyte substitution
+      # that nothing in the generator needs yet. The weekly `pin` workflow
+      # covers that separately.
+      checks = forAllSystems (pkgs: let
+        bindgen = bindgenFor pkgs;
+      in {
+        # Building the package runs the 13 integration and 7 unit tests in the
+        # sandbox, which is stricter than `cargo test` in a checkout: it has
+        # caught files missing from `bindgenSrc` that the checkout still had.
+        inherit bindgen;
+
+        clippy = bindgen.overrideAttrs (old: {
+          pname = "${old.pname}-clippy";
+          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.clippy ];
+          buildPhase = "cargo clippy --all-targets -- --deny warnings";
+          doCheck = false;
+          installPhase = "touch $out";
+        });
+
+        # `cargo fmt` rather than bare `rustfmt` so the edition comes from
+        # Cargo.toml instead of being restated here.
+        fmt = pkgs.runCommand "rocq-component-bindgen-fmt"
+          { nativeBuildInputs = [ pkgs.cargo pkgs.rustfmt ]; } ''
+            cp -r ${bindgenSrc}/bindgen crate
+            chmod -R u+w crate
+            export CARGO_HOME=$PWD/.cargo
+            cd crate
+            cargo fmt --check
+            touch $out
+          '';
+
+        # The load-bearing pin: wit-parser computes the canonical-ABI layout the
+        # adapter encodes, and `wasm-tools component new` computes the layout the
+        # host reads. They agree only because they are the same code. A drift
+        # here is exactly the silent failure this repo exists to avoid -- the
+        # component would build and return plausible garbage -- so it fails the
+        # build instead.
+        abi-version = pkgs.runCommand "abi-version-match"
+          { nativeBuildInputs = [ pkgs.wasm-tools ]; } ''
+            parser=$(grep -A1 'name = "wit-parser"' ${./bindgen/Cargo.lock} \
+                     | sed -n 's/^version = "[0-9]\+\.\([0-9]\+\)\..*/\1/p')
+            tools=$(wasm-tools --version \
+                    | sed -n 's/^wasm-tools [0-9]\+\.\([0-9]\+\)\..*/\1/p')
+
+            # An unparsed version must not pass for a match.
+            case "$parser" in "" | *[!0-9]*)
+              echo "could not read the wit-parser version from Cargo.lock" >&2
+              exit 1 ;;
+            esac
+            case "$tools" in "" | *[!0-9]*)
+              echo "could not read the version from \`wasm-tools --version\`" >&2
+              exit 1 ;;
+            esac
+
+            if [ "$parser" != "$tools" ]; then
+              echo "wit-parser 0.$parser.x does not match wasm-tools 1.$tools.x." >&2
+              echo "The generator would compute a different canonical-ABI layout" >&2
+              echo "than the component tooling. Pin bindgen/Cargo.toml to" >&2
+              echo "wit-parser 0.$tools, or pin nixpkgs back." >&2
+              exit 1
+            fi
+            echo "wit-parser 0.$parser.x matches wasm-tools 1.$tools.x"
+            touch $out
+          '';
       });
 
       devShells = forAllSystems (pkgs: {
@@ -91,12 +175,15 @@
           packages = [
             (rocqPkgs pkgs).coq
             (rocqPkgs pkgs).CertiRocq
-            pkgs.cargo        # 1.97.0
-            pkgs.rustc
-            pkgs.clippy
-            pkgs.rustfmt
             pkgs.rust-analyzer
-          ] ++ componentTools pkgs;
+          ] ++ rustTools pkgs ++ componentTools pkgs;
+        };
+
+        # The same shell without the Rocq package set, for working on the
+        # generator alone -- CertiRocq is a long substitution to wait on when
+        # nothing you are about to run needs it.
+        bindgen = pkgs.mkShell {
+          packages = [ pkgs.rust-analyzer ] ++ rustTools pkgs ++ componentTools pkgs;
         };
       });
     };

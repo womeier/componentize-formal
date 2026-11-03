@@ -180,6 +180,12 @@ without anyone noticing the representation moved. It needs CertiRocq and
 `wasmtime`, both already in the dev shell, and it cannot be written before the
 generator emits adapters, which is why it is phase 1 and not now.
 
+Note that `flake.nix`'s `checks` are today deliberately Rocq-free, so every
+push can run all of them in seconds; the weekly `pin` workflow carries the
+gigabyte-scale Rocq substitution instead. Adding this one moves CertiRocq onto
+the per-push path, so it wants deciding then whether that is acceptable or
+whether the suite belongs on the slower schedule.
+
 For the canonical-ABI half of the same problem, the equivalent check is
 differential: generate layouts and diff them against what `cargo component`
 produces for the matching Rust signature — see
