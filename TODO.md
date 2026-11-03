@@ -27,9 +27,10 @@ section.
 | `E-ARITY-0`, `E-ARITY-N`, `E-NO-RESULT` | exports that aren't one-in-one-out | [planned, phase 2](#arity) |
 | `E-MULTI-EXPORT` | more than one exported function | [planned, phase 2](#multi-export) |
 | `E-STRUCTURED` | `record`, `tuple`, `variant`, nested `option`/`result` | [planned, phase 3](#structured-types) |
+| `E-INT-WIDTH` | `u32` | [not planned](#integer-widths) |
 | `E-SIGNED` | `s8`, `s16`, `s32`, `s64` | [wanted, not scheduled](#signed-integers) |
 | `E-FLOAT` | `f64` | [planned, phase 4](#f64) |
-| `E-FLOAT` | `f32` | [wanted, not scheduled](#floats) |
+| `E-FLOAT` | `f32` | [not planned](#f32) |
 | `E-LIST`, `E-MAP` | `list`, fixed-length list, `map` | [out of scope](#lists) |
 | `E-STRING` | `string` | [out of scope](#strings) |
 | `E-CHAR` | `char` | [out of scope](#char) |
@@ -65,9 +66,9 @@ A wrong adapter does not announce itself: it reads the wrong bytes and
 
 ## Planned
 
-Integers are carried by **Rocq's primitive 63-bit unsigned ints** (`Uint63.int`)
-and nothing else. `u8`, `u16` and `u32` fit exactly. `u64` does not: values
-≥ 2⁶³ have no representation, so the generator warns at the position where the
+Integers are carried by **Rocq's primitive 63-bit unsigned ints**
+(`Uint63.int`), and `u64` is the only supported width. Values ≥ 2⁶³ have no
+representation there, so the generator warns at the position where the
 narrowing happens and the adapter guards rather than truncating.
 
 ### <a id="arity"></a>Export shape — `E-ARITY-0`, `E-ARITY-N`, `E-NO-RESULT`, phase 2
@@ -143,12 +144,6 @@ bits. Worth checking against `wasm-tools` rather than assuming.
 
 ## Wanted, not scheduled
 
-### <a id="floats"></a>`f32` — `E-FLOAT`
-
-Rocq's `PrimFloat` is binary64 only, so `f32` needs an explicit rounding
-convention in both directions before it can be mapped. `f64` is
-[phase 4](#f64).
-
 ### <a id="signed-integers"></a>Signed integers — `E-SIGNED`
 
 Only unsigned integers are supported. `s8` … `s64` need a decision first:
@@ -184,6 +179,21 @@ phased. `map` additionally needs a key ordering both sides agree on.
 A `string` is a list of bytes plus an encoding choice that `canon lift` forces
 on you, so it needs everything [lists](#lists) need and a decision about
 `string` vs `list ascii` vs a byte array on the Rocq side.
+
+### <a id="integer-widths"></a>32-bit integers — `E-INT-WIDTH`
+
+`u64` is the supported width. A narrower type is exactly representable in a
+63-bit int on the way *in*, but not on the way *out*: nothing stops the Rocq
+side returning an `int` larger than the declared width, so every lift would
+need a range check and a way to report the overflow. `u64` needs the guard in
+one direction only, which is the asymmetry that makes it the width to carry.
+
+### <a id="f32"></a>`f32` — `E-FLOAT`
+
+Rocq's `PrimFloat` is binary64 only. There is no Rocq type that carries an
+`f32` faithfully, and mapping it to a `float` would silently round every value
+crossing the boundary in both directions. `f64` is the supported width
+([phase 4](#f64)).
 
 ### <a id="char"></a>`char` — `E-CHAR`
 

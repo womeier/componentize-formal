@@ -1,2 +1,2 @@
 package local:bad;
-world w { export emit: func(x: u32); }
+world w { export emit: func(x: u64); }

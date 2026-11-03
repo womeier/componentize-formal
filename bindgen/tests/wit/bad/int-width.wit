@@ -1,0 +1,2 @@
+package local:bad;
+world w { export shrink: func(x: u32) -> option<u32>; }

@@ -48,8 +48,8 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | `bool` | **supported** | tagged immediate, `false`=1, `true`=3 |
-| `u8`, `u16`, `u32` | **supported** | Rocq's primitive 63-bit ints (`Uint63.int`) |
-| `u64` | **supported** | same, but values ≥ 2⁶³ don't fit — warned at the position, guarded in the adapter |
+| `u64` | **supported** | Rocq's primitive 63-bit ints (`Uint63.int`); values ≥ 2⁶³ don't fit — warned at the position, guarded in the adapter |
+| `u32` | [not planned](TODO.md#integer-widths) | a narrower width needs a range check on every lift |
 | `enum` | **supported** | all-nullary inductive, `2*ord+1` |
 | `option<T>`, `result<T, E>` as the result | **supported** | doubles as the out-of-memory channel |
 | type aliases | **supported** | looked through |
@@ -57,7 +57,7 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | nested `option`/`result` | planned (phase 3) | same machinery |
 | `s8`, `s16`, `s32`, `s64` | [wanted, unscheduled](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
 | `f64` | planned (phase 4) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
-| `f32` | [wanted, unscheduled](TODO.md#floats) | `PrimFloat` is binary64 only, so it needs a rounding convention |
+| `f32` | [not planned](TODO.md#f32) | `PrimFloat` is binary64 only; nothing carries an `f32` faithfully |
 | `list<T>`, fixed-length lists, `map<K, V>` | [not planned](TODO.md#lists) | needs `cabi_realloc` + cons-cell walking |
 | `string` | [not planned](TODO.md#strings) | a list plus an encoding choice |
 | `char` | [not planned](TODO.md#char) | no faithful Rocq counterpart |

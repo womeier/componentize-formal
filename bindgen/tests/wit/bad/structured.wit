@@ -1,5 +1,5 @@
 package local:bad;
 world w {
-  record point { x: u32, y: u32 }
-  export norm: func(p: point) -> option<u32>;
+  record point { x: u64, y: u64 }
+  export norm: func(p: point) -> option<u64>;
 }

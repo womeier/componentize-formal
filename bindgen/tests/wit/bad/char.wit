@@ -1,2 +1,2 @@
 package local:bad;
-world w { export up: func(c: char) -> option<u32>; }
+world w { export up: func(c: char) -> option<u64>; }

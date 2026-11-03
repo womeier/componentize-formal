@@ -319,9 +319,17 @@ fn is_oom_channel(resolve: &Resolve, ty: Type) -> bool {
 /// needs the full canonical-ABI layout work.
 fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut Report) {
     match ty {
-        // Unsigned integers are carried by Rocq's primitive 63-bit ints, which
-        // hold u8..u32 exactly.
-        Type::Bool | Type::U8 | Type::U16 | Type::U32 => {}
+        // Unsigned integers are carried by Rocq's primitive 63-bit ints.
+        Type::Bool | Type::U8 | Type::U16 => {}
+        Type::U32 => rep.reject(
+            "E-INT-WIDTH",
+            "u32",
+            site.to_string(),
+            Reason::OutOfScope,
+            "integer-widths",
+            "u64 is the supported width; a narrower type needs a range check on the way back \
+             out, because nothing stops the Rocq side returning a larger int",
+        ),
         Type::U64 => rep.warnings.push(format!(
             "{site}: u64 is carried by Uint63.int, so values >= 2^63 are not representable; \
              the adapter guards instead of truncating"
@@ -340,7 +348,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut 
             "f64",
             site.to_string(),
             Reason::Planned(4),
-            "floats",
+            "f64",
             "waiting on the backend's wasm-prim-floats branch, where an f64 is boxed just \
              as a primitive int is -- a pointer to 8 bytes holding the value -- so the lift \
              and lower are the int63 shape with an f64 load and store",
@@ -349,10 +357,10 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut 
             "E-FLOAT",
             "f32",
             site.to_string(),
-            Reason::Later,
-            "floats",
-            "Rocq's PrimFloat is binary64 only, so f32 needs an explicit rounding \
-             convention in both directions",
+            Reason::OutOfScope,
+            "f32",
+            "Rocq's PrimFloat is binary64 only, so there is nothing to carry an f32 \
+             faithfully; f64 is the supported width",
         ),
         Type::Char => rep.reject(
             "E-CHAR",

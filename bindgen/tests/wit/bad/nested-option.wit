@@ -1,2 +1,2 @@
 package local:bad;
-world w { export lookup: func(k: u32) -> option<option<u32>>; }
+world w { export lookup: func(k: u64) -> option<option<u64>>; }

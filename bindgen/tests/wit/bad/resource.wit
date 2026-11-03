@@ -1,5 +1,5 @@
 package local:bad;
 world w {
-  resource counter { bump: func() -> u32; }
-  export make: func(seed: u32) -> option<u32>;
+  resource counter { bump: func() -> u64; }
+  export make: func(seed: u64) -> option<u64>;
 }

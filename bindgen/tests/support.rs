@@ -88,6 +88,8 @@ fn rejects_what_the_backend_cannot_represent() {
     expect_bad("flags.wit", &["E-FLAGS"]);
     // The resource type and its method are both reported.
     expect_bad("resource.wit", &["E-RESOURCE"]);
+    // u32 in both the parameter and the result, reported once per position.
+    expect_bad("int-width.wit", &["E-INT-WIDTH"]);
 }
 
 #[test]
