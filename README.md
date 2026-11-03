@@ -66,7 +66,7 @@ use. Details in [`TODO.md#failure-channel`](TODO.md#failure-channel).
 | | Status |
 | --- | --- |
 | `check` — accept or reject a world, with reasons | **supported** |
-| `Iface.v`, `extraction.v`, `adapter.wat`, build rules | not yet — hand-written for one export in [`examples/plus1`](examples/plus1), which runs |
+| `Iface.v`, `extraction.v`, `adapter.wat`, build rules | not yet — hand-written in [`examples/`](examples), which run |
 
 ## WIT feature support
 
@@ -122,7 +122,7 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/src/repr.rs`](bindgen/src/repr.rs) | CertiRocq's value representation, with sources |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
-| [`examples/plus1/`](examples/plus1) | the whole pipeline for one export, hand-written in the shape generation has to emit |
+| [`examples/`](examples) | the whole pipeline for one export, hand-written in the shape generation has to emit: [`plus1`](examples/plus1) and [`negb`](examples/negb) |
 | [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
@@ -142,10 +142,19 @@ so a green checkout is a green branch:
 | `componentize-formal` | the generator built and its tests run in the sandbox |
 | `clippy`, `fmt` | `clippy -D warnings`, `cargo fmt --check` |
 | `abi-version` | `wit-parser`'s version must match the `wasm-tools` that ships, since they must compute the same canonical-ABI layout |
-| `representation` | compiles a Rocq function with the real CertiRocq and checks the emitted module against every claim in `repr.rs` |
+| `representation` | compiles Rocq functions with the real CertiRocq and checks the emitted modules against every claim in `repr.rs`, including the constructor immediates |
+| `smoke` | assembles each example into a component and checks what `wasmtime` says it answers |
 
-The last two are Python scripts under [`checks/`](checks) and run standalone in
-`nix develop` as well, which is often what you want while changing `repr.rs`.
-Both guard against the same thing: a mismatch there does not break the build,
-it makes the adapter read the wrong bytes and return plausible garbage. See
+The last three are Python scripts under [`checks/`](checks) and run standalone
+in `nix develop` as well, which is often what you want while changing
+`repr.rs`. They guard against the same thing: a mismatch there does not break
+the build, it makes the adapter read the wrong bytes and return plausible
+garbage.
+
+One part of it does break the build.
+[`bindgen/src/measured.rs`](bindgen/src/measured.rs) records the constructor
+immediates a compiled module actually contained, and `repr.rs` asserts against
+them at compile time, so the generator does not build while it disagrees with
+the last measurement. `python3 checks/representation.py --update` re-measures,
+which is the step where someone decides the change was intended. See
 [representation conformance](TODO.md#representation).

@@ -158,7 +158,27 @@
           } ''
             python3 ${./checks/representation.py} \
               --rocq-source ${./checks/rocq/exports.v} \
+              --constructor-source ${./checks/rocq/constructors.v} \
+              --measured ${./bindgen/src/measured.rs} \
               --repr ${./bindgen/src/repr.rs}
+            touch $out
+          '';
+
+        # Assembles each example into a component and checks what it answers.
+        # Needs no Rocq: the examples link against `stub/`, which stands in for
+        # the backend's output, so this runs on every push while
+        # `checks.representation` is what holds the stub to the real thing.
+        smoke = pkgs.runCommand "smoke"
+          {
+            nativeBuildInputs = [
+              pkgs.python3
+              pkgs.gnumake
+              pkgs.wasm-tools
+              pkgs.binaryen
+              pkgs.wasmtime
+            ];
+          } ''
+            python3 ${./checks/smoke.py} --examples ${./examples}
             touch $out
           '';
       });

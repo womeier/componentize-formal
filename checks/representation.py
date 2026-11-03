@@ -47,7 +47,55 @@ BACKEND_EXPORTS = [
 # `CertiRocq Compile Wasm -file "conformance"` in the .v decides this.
 MODULE_STEM = "conformance"
 
+# One module per constructor, from checks/rocq/constructors.v. Each is a
+# function ignoring its argument and returning one constructor, so the
+# immediate the backend chose is the only constant in its body.
+#
+# `bool` is the pair worth pinning: the pipeline swaps its constructors so
+# that false/true line up with OCaml's 0/1, even though Rocq declares `true`
+# first. `colour` is the control -- three constructors that must come out in
+# declaration order, which is what makes `bool` the exception rather than the
+# rule. Both are upstream behaviour that can change; an adapter built on the
+# wrong one returns the other value, cheerfully.
+# Where each measured immediate lives in bindgen/src/measured.rs, which
+# repr.rs holds itself to with a `const` assertion -- so a representation
+# change that reaches this file stops the generator compiling.
+MEASURED_TARGETS = {
+    "ctor-false": ("BOOL_FALSE", None),
+    "ctor-true": ("BOOL_TRUE", None),
+    "ctor-red": ("NULLARY_ORDINALS", 0),
+    "ctor-green": ("NULLARY_ORDINALS", 1),
+    "ctor-blue": ("NULLARY_ORDINALS", 2),
+}
+
+CONSTRUCTORS = [
+    # (-file stem, repr.rs constant, or the ordinal to expect)
+    ("ctor-false", "BOOL_FALSE", None),
+    ("ctor-true", "BOOL_TRUE", None),
+    ("ctor-red", None, 0),
+    ("ctor-green", None, 1),
+    ("ctor-blue", None, 2),
+]
+
 CONST = re.compile(r'^\s*pub const (?P<name>[A-Z_]+): &str = "(?P<value>[^"]*)";', re.M)
+# `pub const BOOL_TRUE: u32 = nullary_immediate(1);`
+ORDINAL_CONST = re.compile(
+    r"^\s*pub const (?P<name>[A-Z_]+): u32 = nullary_immediate\((?P<ordinal>\d+)\);", re.M
+)
+# The formula is evaluated below rather than restated, so it is pinned here:
+# a change to it must break this check rather than be silently mirrored.
+FORMULA = re.compile(
+    r"pub const fn nullary_immediate\(ordinal: u32\) -> u32 \{\s*2 \* ordinal \+ 1\s*\}"
+)
+MEASURED_SCALAR = re.compile(
+    r"^pub const (?P<name>[A-Z_]+): u32 = (?P<value>\d+);", re.M
+)
+MEASURED_ARRAY = re.compile(
+    r"^pub const (?P<name>[A-Z_]+): \[u32; \d+\] = \[(?P<values>[^\]]*)\];", re.M
+)
+FUNC_START = re.compile(r"^  \(func \(;(?P<index>\d+);\)", re.M)
+EXPORT_FUNC = re.compile(r'\(export "(?P<name>[^"]*)" \(func (?P<index>\d+)\)\)')
+I32_CONST = re.compile(r"^\s*i32\.const (?P<value>-?\d+)\s*$", re.M)
 EXPORT = re.compile(r'\(export "(?P<name>[^"]*)"')
 IMPORT = re.compile(r'^\s*\(import ', re.M)
 MEMORY = re.compile(r'^\s*\(memory \(;\d+;\)', re.M)
@@ -91,8 +139,13 @@ def rocq_filename(source: Path) -> str:
     return f"{stem}.v"
 
 
-def compile_wasm(rocq_source: Path, workdir: Path) -> Path:
-    """`rocq c` the file and return the .wasm the plugin wrote beside it."""
+def compile_wasm(rocq_source: Path, workdir: Path, stems: list[str] | None = None) -> dict[str, Path]:
+    """`rocq c` the file and return the .wasm files the plugin wrote beside it.
+
+    Keyed by the `-file` name in the .v, which is what ties a module back to
+    the definition it came from.
+    """
+    stems = stems or [MODULE_STEM]
     local = workdir / rocq_filename(rocq_source)
     shutil.copy(rocq_source, local)
 
@@ -106,15 +159,18 @@ def compile_wasm(rocq_source: Path, workdir: Path) -> Path:
             f"{result.stdout}{result.stderr}"
         )
 
-    wasm = workdir / f"{MODULE_STEM}.wasm"
-    if not wasm.is_file():
-        produced = sorted(p.name for p in workdir.iterdir())
-        raise Mismatch(
-            f"`rocq c` produced no {wasm.name}; the -file name in "
-            f"{rocq_source.name} and MODULE_STEM here must agree. "
-            f"The build directory holds: {', '.join(produced)}"
-        )
-    return wasm
+    modules = {}
+    for stem in stems:
+        wasm = workdir / f"{stem}.wasm"
+        if not wasm.is_file():
+            produced = sorted(p.name for p in workdir.iterdir())
+            raise Mismatch(
+                f"`rocq c` produced no {wasm.name}; the -file names in "
+                f"{rocq_source.name} and the stems here must agree. "
+                f"The build directory holds: {', '.join(produced)}"
+            )
+        modules[stem] = wasm
+    return modules
 
 
 def disassemble(wasm: Path) -> str:
@@ -125,6 +181,135 @@ def disassemble(wasm: Path) -> str:
         text=True,
         capture_output=True,
     ).stdout
+
+
+def returned_immediate(names: dict[str, str], wat: str, stem: str) -> int:
+    """The constant a one-constructor function leaves in `result`.
+
+    The module holds exactly two functions: `main_function` and the wrapper
+    for the definition. The wrapper of a function that ignores its argument
+    and returns a nullary constructor contains that constructor's immediate
+    and nothing else, so there is no need to run anything.
+    """
+    exported = {m.group("name"): int(m.group("index")) for m in EXPORT_FUNC.finditer(wat)}
+    wrappers = [
+        index
+        for name, index in exported.items()
+        if name != names["MAIN_FUNCTION"]
+    ]
+    if len(wrappers) != 1:
+        raise Mismatch(
+            f"{stem}: expected one exported function besides "
+            f'"{names["MAIN_FUNCTION"]}", found {len(wrappers)}: '
+            f"{', '.join(sorted(exported))}. The backend's export shape "
+            "changed and this check can no longer tell which function is the "
+            "wrapper."
+        )
+
+    starts = [(int(m.group("index")), m.start()) for m in FUNC_START.finditer(wat)]
+    if not starts:
+        raise Mismatch(
+            f"{stem}: found no function bodies, so the pattern this check "
+            "reads them with no longer matches wasm-tools' output"
+        )
+    bounds = {
+        index: (start, starts[i + 1][1] if i + 1 < len(starts) else len(wat))
+        for i, (index, start) in enumerate(starts)
+    }
+    start, end = bounds[wrappers[0]]
+    constants = [int(m.group("value")) for m in I32_CONST.finditer(wat[start:end])]
+    if len(constants) != 1:
+        raise Mismatch(
+            f"{stem}: the wrapper holds {len(constants)} i32 constants "
+            f"({constants}), not one. A function returning a nullary "
+            "constructor used to compile to exactly that constant; the "
+            "codegen changed and this check has to be rewritten to follow it."
+        )
+    return constants[0]
+
+
+def measured_values(path: Path) -> dict[str, int]:
+    """What bindgen/src/measured.rs records, keyed by -file stem."""
+    text = path.read_text()
+    scalars = {m.group("name"): int(m.group("value")) for m in MEASURED_SCALAR.finditer(text)}
+    arrays = {
+        m.group("name"): [int(v) for v in m.group("values").split(",") if v.strip()]
+        for m in MEASURED_ARRAY.finditer(text)
+    }
+    values = {}
+    for stem, (name, index) in MEASURED_TARGETS.items():
+        try:
+            values[stem] = scalars[name] if index is None else arrays[name][index]
+        except (KeyError, IndexError):
+            raise Mismatch(
+                f"{path} no longer records {name}"
+                f"{'' if index is None else f'[{index}]'}, which this check "
+                "has to compare against. It is generated -- rerun with "
+                "--update."
+            ) from None
+    return values
+
+
+def write_measured(path: Path, found: dict[str, int]) -> None:
+    """Rewrite the generated constants in place, leaving the prose alone."""
+
+    def scalar(match: re.Match[str]) -> str:
+        name = match.group("name")
+        stem = next(
+            (s for s, (n, i) in MEASURED_TARGETS.items() if n == name and i is None), None
+        )
+        return match.group(0) if stem is None else f"pub const {name}: u32 = {found[stem]};"
+
+    def array(match: re.Match[str]) -> str:
+        name = match.group("name")
+        items = sorted(
+            (i, found[s])
+            for s, (n, i) in MEASURED_TARGETS.items()
+            if n == name and i is not None
+        )
+        if not items:
+            return match.group(0)
+        values = ", ".join(str(v) for _, v in items)
+        return f"pub const {name}: [u32; {len(items)}] = [{values}];"
+
+    text = MEASURED_ARRAY.sub(array, MEASURED_SCALAR.sub(scalar, path.read_text()))
+    path.write_text(text)
+
+
+def check_constructors(repr_text: str, names: dict[str, str], wats: dict[str, str]) -> list[str]:
+    """Hold repr.rs's constructor encoding to what the backend emits."""
+    problems = []
+    if not FORMULA.search(repr_text):
+        raise Mismatch(
+            "repr.rs's `nullary_immediate` is no longer `2 * ordinal + 1`. "
+            "This check evaluates that formula to work out what to expect, so "
+            "it has to be updated with it."
+        )
+    ordinals = {
+        m.group("name"): int(m.group("ordinal")) for m in ORDINAL_CONST.finditer(repr_text)
+    }
+
+    found = {}
+    for stem, const, ordinal in CONSTRUCTORS:
+        found[stem] = returned_immediate(names, wats[stem], stem)
+        if const is not None:
+            if const not in ordinals:
+                raise Mismatch(
+                    f"repr.rs no longer defines {const} as "
+                    "`nullary_immediate(<ordinal>)`; this check cannot verify "
+                    "a constant it cannot read."
+                )
+            ordinal = ordinals[const]
+        want = 2 * ordinal + 1
+        got = found[stem]
+        if got != want:
+            source = f"repr.rs {const}" if const else f"ordinal {ordinal}"
+            problems.append(
+                f"{stem}: the backend returns {got}, but {source} says "
+                f"{want}. An adapter built on the wrong immediate reads the "
+                "wrong constructor and answers with a different one."
+            )
+    return problems, found
 
 
 def check(names: dict[str, str], wat: str) -> list[str]:
@@ -203,6 +388,26 @@ def main() -> int:
         help="the .v to compile (default: %(default)s)",
     )
     parser.add_argument(
+        "--constructor-source",
+        type=Path,
+        default=root / "checks/rocq/constructors.v",
+        help="the .v whose constructors are read back (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--measured",
+        type=Path,
+        default=root / "bindgen/src/measured.rs",
+        help="the generated record of what the backend emits "
+        "(default: %(default)s)",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="rewrite the measured file from this backend instead of checking "
+        "against it. Only after deciding the change is intended: it is what "
+        "makes the generator compile again.",
+    )
+    parser.add_argument(
         "--repr",
         type=Path,
         default=root / "bindgen/src/repr.rs",
@@ -213,9 +418,37 @@ def main() -> int:
 
     try:
         names = declared_names(args.repr)
+        repr_text = args.repr.read_text()
         with tempfile.TemporaryDirectory() as tmp:
-            wasm = compile_wasm(args.rocq_source, Path(tmp))
-            problems = check(names, disassemble(wasm))
+            shape = compile_wasm(args.rocq_source, Path(tmp))
+            problems = check(names, disassemble(shape[MODULE_STEM]))
+        with tempfile.TemporaryDirectory() as tmp:
+            stems = [stem for stem, _, _ in CONSTRUCTORS]
+            modules = compile_wasm(args.constructor_source, Path(tmp), stems)
+            ctor_problems, found = check_constructors(
+                repr_text,
+                names,
+                {stem: disassemble(wasm) for stem, wasm in modules.items()},
+            )
+            problems += ctor_problems
+
+        if args.update:
+            write_measured(args.measured, found)
+            print(f"representation: rewrote {args.measured} from this backend")
+            for stem, value in found.items():
+                print(f"  {stem} = {value}")
+            print("Rebuild the generator; repr.rs asserts against these.")
+            return 0
+
+        for stem, want in measured_values(args.measured).items():
+            if found[stem] != want:
+                problems.append(
+                    f"{stem}: the backend returns {found[stem]}, but "
+                    f"{args.measured.name} records {want}. If the change is "
+                    "intended, rerun with --update -- that file is what "
+                    "repr.rs asserts against, so the generator will not "
+                    "compile until it agrees."
+                )
     except Mismatch as e:
         print(f"representation: {e}", file=sys.stderr)
         return 1
@@ -233,7 +466,8 @@ def main() -> int:
 
     checked = ", ".join(names[c] for c in BACKEND_EXPORTS)
     print(f"repr.rs agrees with CertiRocq: {checked}, no imports, one memory,")
-    print("and type index n taking n i32s.")
+    print("type index n taking n i32s, and the nullary constructors of")
+    print("`bool` (swapped) and a three-case inductive (not swapped).")
     return 0
 
 

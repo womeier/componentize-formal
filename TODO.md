@@ -189,9 +189,24 @@ The adapter bakes CertiRocq's value representation into loads, stores and
 offsets, and nothing checks that on either side. Three layers.
 
 **1a — the formulas.** Every constant lives in
-[`repr.rs`](bindgen/src/repr.rs) with its source, and the unit tests pin them
-against the hand-written adapters in `testing/examples/component/{plus1,negb}`.
-Catches a mistake in `repr.rs`, not the backend moving underneath it.
+[`repr.rs`](bindgen/src/repr.rs) with its source, and its unit tests pin the
+formulas against each other. Catches a mistake in `repr.rs`, not the backend
+moving underneath it --- which is the whole reason for the layers below.
+
+**1a′ — what was measured.**
+[`bindgen/src/measured.rs`](bindgen/src/measured.rs) records the immediates a
+compiled module actually contained, and `repr.rs` holds itself to them with
+`const` assertions. So a representation change that reaches that file stops
+the generator compiling rather than changing what it emits:
+
+```text
+error[E0080]: evaluation panicked: assertion failed: BOOL_TRUE == crate::measured::BOOL_TRUE
+```
+
+The file is generated --- `checks/representation.py --update` rewrites it from
+whatever backend is on `PATH` --- so it is a record of a measurement, not a
+second opinion. Deciding that a change is intended is the point at which
+someone has to run that command.
 
 **1b — the module's shape.** `checks.representation` does this now:
 [`checks/representation.py`](checks/representation.py) compiles
@@ -201,6 +216,25 @@ the table present (the adapter links through it), no imports (the premise of bot
 `E-IMPORT` and the instantiation proof), one memory (so `wasm-merge` needs no
 `--enable-multimemory`), and type index *n* taking *n* `i32`s. Names come out
 of `repr.rs` itself, so a rename there cannot leave it testing the old one.
+
+It also reads back the **constructor encoding**, which was filed under layer 2
+on the assumption that it needed the module to run. It does not: a function
+that ignores its argument and returns a nullary constructor compiles to that
+constructor's immediate and nothing else, so
+[`constructors.v`](checks/rocq/constructors.v) compiles five of them and the
+check reads the constant out of each wrapper. That pins `bool`'s swapped pair
+and, as a control, a three-case inductive that is *not* swapped.
+
+Constant functions, not `negb`: an involution hides a swapped encoding
+completely, because lifting and lowering with the same wrong mapping cancels
+out and every answer still looks right.
+
+**1c — the components answer.** `checks.smoke`
+([`checks/smoke.py`](checks/smoke.py)) assembles each example under
+[`examples/`](examples) into a component and compares what `wasmtime` prints
+against expectations written out in full. It links against the examples'
+`stub/`, so it needs no Rocq and runs on every push; what holds the stub to
+the real backend is 1b above, and layer 2 below.
 
 **2 — the backend's behaviour, phase 1.** The rest needs the module to *run*:
 one case per representation, each a Rocq definition plus a world through the
