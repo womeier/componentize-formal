@@ -56,7 +56,8 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `record`, `tuple`, `variant` | planned (phase 3) | needs split ordinal mapping + canonical-ABI layout |
 | nested `option`/`result` | planned (phase 3) | same machinery |
 | `s8`, `s16`, `s32`, `s64` | [wanted, unscheduled](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
-| `f32`, `f64` | [wanted, blocked upstream](TODO.md#floats) | the backend rejects `primFloat` outright |
+| `f64` | planned (phase 4) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
+| `f32` | [wanted, unscheduled](TODO.md#floats) | `PrimFloat` is binary64 only, so it needs a rounding convention |
 | `list<T>`, fixed-length lists, `map<K, V>` | [not planned](TODO.md#lists) | needs `cabi_realloc` + cons-cell walking |
 | `string` | [not planned](TODO.md#strings) | a list plus an encoding choice |
 | `char` | [not planned](TODO.md#char) | no faithful Rocq counterpart |

@@ -335,14 +335,24 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut 
             "only unsigned integers are carried, via Rocq's primitive 63-bit ints; signed \
              ones need a choice between Sint63 and a two's-complement reading of Uint63",
         ),
-        Type::F32 | Type::F64 => rep.reject(
+        Type::F64 => rep.reject(
             "E-FLOAT",
-            if ty == Type::F32 { "f32" } else { "f64" },
+            "f64",
+            site.to_string(),
+            Reason::Planned(4),
+            "floats",
+            "waiting on the backend's wasm-prim-floats branch, where an f64 is boxed just \
+             as a primitive int is -- a pointer to 8 bytes holding the value -- so the lift \
+             and lower are the int63 shape with an f64 load and store",
+        ),
+        Type::F32 => rep.reject(
+            "E-FLOAT",
+            "f32",
             site.to_string(),
             Reason::Later,
             "floats",
-            "blocked upstream: translate_primitive_value rejects primFloat outright \
-             (LambdaANF_to_Wasm.v:238), so there is no representation to lift or lower yet",
+            "Rocq's PrimFloat is binary64 only, so f32 needs an explicit rounding \
+             convention in both directions",
         ),
         Type::Char => rep.reject(
             "E-CHAR",

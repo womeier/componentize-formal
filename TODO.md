@@ -28,7 +28,8 @@ section.
 | `E-MULTI-EXPORT` | more than one exported function | [planned, phase 2](#multi-export) |
 | `E-STRUCTURED` | `record`, `tuple`, `variant`, nested `option`/`result` | [planned, phase 3](#structured-types) |
 | `E-SIGNED` | `s8`, `s16`, `s32`, `s64` | [wanted, not scheduled](#signed-integers) |
-| `E-FLOAT` | `f32`, `f64` | [wanted, blocked upstream](#floats) |
+| `E-FLOAT` | `f64` | [planned, phase 4](#f64) |
+| `E-FLOAT` | `f32` | [wanted, not scheduled](#floats) |
 | `E-LIST`, `E-MAP` | `list`, fixed-length list, `map` | [out of scope](#lists) |
 | `E-STRING` | `string` | [out of scope](#strings) |
 | `E-CHAR` | `char` | [out of scope](#char) |
@@ -125,9 +126,28 @@ result type. Two halves:
 A top-level `option<T>`/`result<T, E>` result is already accepted, because
 that is the out-of-memory channel rather than a structured type.
 
+### <a id="f64"></a>`f64` — `E-FLOAT`, phase 4
+
+Waiting on the backend's `wasm-prim-floats` branch, where an `f64` is boxed just
+as a primitive int is — a pointer to 8 bytes holding the value — so the lift and
+lower are the `int63` shape with `f64.load`/`f64.store` in place of the i64
+ones. `main` still rejects `primFloat` in `translate_primitive_value`
+(`theories/CodegenWasm/LambdaANF_to_Wasm.v:238`), so this unblocks when that
+branch lands.
+
+One thing to confirm when implementing: NaN canonicalisation is `canon lift`'s
+job in the canonical ABI, which would mean the adapter only has to move the
+bits. Worth checking against `wasm-tools` rather than assuming.
+
 ---
 
 ## Wanted, not scheduled
+
+### <a id="floats"></a>`f32` — `E-FLOAT`
+
+Rocq's `PrimFloat` is binary64 only, so `f32` needs an explicit rounding
+convention in both directions before it can be mapped. `f64` is
+[phase 4](#f64).
 
 ### <a id="signed-integers"></a>Signed integers — `E-SIGNED`
 
@@ -138,28 +158,6 @@ the Rocq side computes arithmetic that isn't the WIT arithmetic).
 
 `s8` … `s32` are easy either way. `s64` has the same problem `u64` already has,
 one bit short.
-
-### <a id="floats"></a>Floats — `E-FLOAT`, blocked upstream
-
-**Blocked on the backend, not on this tool.** `translate_primitive_value`
-rejects primitive floats outright:
-
-```coq
-| AstCommon.primFloat => fun f => Err "Extraction of floats to Wasm not yet supported"
-```
-— `theories/CodegenWasm/LambdaANF_to_Wasm.v:238`
-
-So there is no representation to lift or lower yet, and this stays blocked on
-the backend however much the generator is ready for it.
-(`LambdaANF_to_Wasm_primfloats.vo`
-exists in the checkout without its `.v`, which looks like a stale build artifact
-rather than live support — worth confirming before planning this.)
-
-Once the backend carries floats, `f64` ↔ `PrimFloat.float` should be
-straightforward, boxed the way `int63` is. `f32` is the awkward one: Rocq's
-`PrimFloat` is binary64 only, so `f32` needs an explicit rounding convention in
-both directions. The canonical ABI is also strict about NaN handling, which the
-lift has to respect.
 
 ---
 
