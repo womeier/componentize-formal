@@ -37,6 +37,15 @@ jobs:
       # darwin or aarch64 that the build below would never reach.
       - run: nix flake check --all-systems --no-build
 
+      # `checks.representation` needs CertiRocq, which must always be a
+      # substitution from the coq-community caches. Asserting that up front
+      # with --max-jobs 0 turns a garbage-collected cache into a failure in
+      # seconds, rather than an hours-long MetaRocq build inside the step
+      # below. The weekly `pin` workflow catches the same rot when nobody is
+      # pushing.
+      - run: nix build --max-jobs 0 .#certirocq
+
       # Builds the checks for this system: the generator and its test suite in
-      # the sandbox, clippy, rustfmt, and the wit-parser/wasm-tools pin.
+      # the sandbox, clippy, rustfmt, the wit-parser/wasm-tools pin, and
+      # repr.rs against a module the real CertiRocq emitted.
       - run: nix flake check --print-build-logs

@@ -8,9 +8,11 @@
 //!
 //! The unit tests below pin the formulas against the values in the
 //! hand-written adapters in `testing/examples/component/{plus1,negb}`. That
-//! catches a mistake in *this* file. It cannot catch the backend changing
-//! underneath it -- only running the real pipeline can, which is what the
-//! representation-conformance suite is for (`TODO.md#representation`).
+//! catches a mistake in *this* file, not the backend changing underneath it.
+//! For that, `checks/representation.py` compiles a function with the real
+//! CertiRocq and holds the constants below that are visible in the emitted
+//! module -- the export names, the type indices -- to what it finds. The ones
+//! that need the module to *run* wait on phase 1 (`TODO.md#representation`).
 
 /// Exports the backend puts on the module it emits.
 ///

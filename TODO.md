@@ -149,15 +149,29 @@ Three things to settle before taking it seriously:
 
 The adapter bakes CertiRocq's value representation into loads, stores and
 offsets. Nothing about that is checked by the compiler on either side, so it
-needs its own tests, in two layers.
+needs its own tests, in three layers.
 
-**Layer 1 — the formulas, which exists now.** Every constant lives in
+**Layer 1a — the formulas.** Every constant lives in
 [`bindgen/src/repr.rs`](bindgen/src/repr.rs) with the source it came from, and
 its unit tests pin the formulas against the values the hand-written adapters in
 `testing/examples/component/{plus1,negb}` encode by hand: `false`=1, `true`=3,
 closure fields at 4 and 8, `(env, arg) -> ()` at type index 2, and `option`'s
 per-class ordinals. This catches a mistake in `repr.rs`. It cannot catch the
 backend changing underneath it.
+
+**Layer 1b — the module's shape, which `checks.representation` does now.**
+[`checks/representation.py`](checks/representation.py) compiles
+[`checks/rocq/exports.v`](checks/rocq/exports.v) with the real CertiRocq and
+reads back everything in `repr.rs` that is visible without running the module:
+that the five export names are there, that the table is *not* (the whole reason
+the build patches it in), that the module imports nothing — the premise both
+`E-IMPORT` and the instantiation proof rest on — that there is one memory, so
+`wasm-merge` needs no `--enable-multimemory`, and that type index *n* takes *n*
+`i32`s. The expected names are read out of `repr.rs` itself, so renaming a
+constant there cannot leave the check quietly testing the old name.
+
+What it cannot reach is anything needing the module to *run*: the tagged
+immediates, the field offsets, the out-of-memory channel.
 
 **Layer 2 — the backend's actual behaviour, phase 1.** One case per supported
 representation, each a small Rocq definition plus a world, run through the whole
@@ -174,17 +188,15 @@ pipeline — `rocq c`, patch the table export, `wasm-merge`, `component embed`,
 | two and three exports | `MkExports` field offsets (phase 2) |
 | `f64` round-trip | the boxed float, once `wasm-prim-floats` lands (phase 4) |
 
-This is the only check that ties `repr.rs` to the compiler, so it should run in
-`nix flake check` rather than on demand — otherwise a CertiRocq bump can land
-without anyone noticing the representation moved. It needs CertiRocq and
-`wasmtime`, both already in the dev shell, and it cannot be written before the
-generator emits adapters, which is why it is phase 1 and not now.
+This is the only layer that observes a representation *value*, so it belongs in
+`nix flake check` next to layer 1b rather than running on demand — otherwise a
+CertiRocq bump can land without anyone noticing the offsets moved. It needs
+CertiRocq and `wasmtime`, both already in the dev shell, and it cannot be
+written before the generator emits adapters, which is why it is phase 1.
 
-Note that `flake.nix`'s `checks` are today deliberately Rocq-free, so every
-push can run all of them in seconds; the weekly `pin` workflow carries the
-gigabyte-scale Rocq substitution instead. Adding this one moves CertiRocq onto
-the per-push path, so it wants deciding then whether that is acceptable or
-whether the suite belongs on the slower schedule.
+CertiRocq on the per-push path is settled and fine: it is substituted from the
+coq-community caches, never built, which `checks.representation` already relies
+on. The weekly `pin` workflow exists to keep that true.
 
 For the canonical-ABI half of the same problem, the equivalent check is
 differential: generate layouts and diff them against what `cargo component`
@@ -382,6 +394,66 @@ needs the lift/lower pair in the mirror direction as well.
 
 Imported *types*, which is what a `use` statement produces, are already fine:
 they are just names, and the gate lets them through.
+
+### <a id="frontends"></a>Other frontends: Lean and Agda
+
+Rocq is the only frontend today. The [Peregrine
+project](https://peregrine-project.github.io/) makes the others genuinely
+plausible rather than speculative, because its Wasm backend *is* this one:
+Peregrine routes Rocq, Lean and Agda through λ□ (LambdaBox) and compiles that
+to Wasm with [CertiRocq-wasm](https://github.com/womeier/certicoqwasm). Same
+backend, same emitted module, so the same value representation.
+
+That is the whole reason this is worth wanting: almost nothing in the generator
+is about Rocq.
+
+| Artifact | Frontend-specific? |
+| --- | --- |
+| `adapter.wat` | no — it depends only on [`repr.rs`](bindgen/src/repr.rs), which is a fact about the backend |
+| the build rules | no — `wasm-merge`, `component embed`, `component new` are the same |
+| the WIT support gate | no — it decides what the *backend* can represent |
+| the type mapping | the semantics are shared through λ□; only the surface syntax differs |
+| `Iface.v` | yes — a Lean `structure`/signature, or an Agda record, in place of a Rocq `Module Type` |
+| `extraction.v` | yes — Peregrine's CLI is `peregrine wasm prog.ast -o prog.wasm`, taking a λ□ AST the frontend emits, rather than a `CertiRocq Compile Wasm` call from inside a `.v` |
+
+So the shape this wants is a frontend seam with three members — render a type,
+render the interface file, drive compilation to `.wasm` — and everything else
+stays shared. Worth noting that routing *Rocq* through Peregrine too would
+collapse the last row into one path for all three.
+
+What must be verified rather than assumed, each being a silent failure if
+wrong:
+
+1. **Primitive integers.** `u64` currently maps to `Uint63.int`, which the
+   backend boxes as 8 bytes behind a pointer. Peregrine's Lean frontend turns
+   `Nat` literals into `primInt`, so `Nat` plausibly lands on the same
+   representation — but Lean's `UInt64` is a separate type, and whether it
+   erases to that same primitive or to a structure wrapping one decides whether
+   the adapter reads a payload or a constructor block. Until that is checked,
+   a Lean world has to be rejected, not guessed at.
+
+2. **Constructor ordinals.** `match_ordinals_with_tag` numbers boxed and
+   unboxed constructors with independent counters over λ□'s constructor list,
+   so a WIT `enum` case maps to an ordinal only via the order erasure produces.
+   That order is a frontend fact. Lean's `Bool` is `false | true` like Rocq's,
+   which is suggestive and not evidence.
+
+3. **What the Peregrine-driven backend actually emits.** `peregrine wasm` is a
+   different driver from the `CertiRocq Compile Wasm` plugin, even over the same
+   backend. [`checks/representation.py`](checks/representation.py) is already
+   the instrument for this: point it at a module Peregrine produced and it will
+   say whether the exports, the import list, the memory count and the function
+   type indices still match `repr.rs`. That check is the cheap first step, and
+   it can be taken before any generator work.
+
+Peregrine's Lean frontend does not support string literals, primitive floats or
+arrays, which overlaps the gate's own gaps ([strings](#strings),
+[lists](#lists)) — so a Lean world would be the intersection of two subsets,
+and the gate would have to know which frontend it is gating for.
+
+Nothing in `component.toml` selects a frontend today, and nothing should until
+there is a second one: a key whose only valid value is `rocq` is just a way to
+be wrong later.
 
 ### <a id="signed-integers"></a>Signed integers — `E-SIGNED`
 

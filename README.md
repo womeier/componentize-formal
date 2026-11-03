@@ -101,6 +101,8 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | several exports | planned (phase 2) | one compiled `MkExports` term carrying every closure |
 | imports | [wanted, unscheduled](TODO.md#imports) | `mod_imports := []` is baked into the correctness proof |
 | `export some:pkg/iface` | [not planned](TODO.md#exported-interfaces) | only top-level function exports |
+| Rocq as the source language | **supported** | the only frontend today |
+| Lean, Agda | [wanted, unscheduled](TODO.md#frontends) | [Peregrine](https://peregrine-project.github.io/) routes them through the same backend, so only the interface file and the compile driver differ |
 | verified glue | [research project](TODO.md#verified-glue) | the adapter is trusted, as the C glue is |
 
 ## Layout
@@ -112,6 +114,7 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/src/repr.rs`](bindgen/src/repr.rs) | CertiRocq's value representation, with sources |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
+| [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
 
@@ -122,8 +125,18 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 the Rocq package set, for working on the generator alone. `nix build .#bindgen`
 builds the generator.
 
-`nix flake check` runs the whole gate: the generator's tests in the Nix sandbox,
-`clippy -D warnings`, `cargo fmt --check`, and the pin tying `wit-parser` to
-`wasm-tools` — see [representation conformance](TODO.md#representation) for why
-that one matters. CI does nothing but run that command, so a green checkout is a
-green branch.
+`nix flake check` runs the whole gate, and CI does nothing but run that command,
+so a green checkout is a green branch:
+
+| Check | |
+| --- | --- |
+| `bindgen` | the generator built and its tests run in the sandbox |
+| `clippy`, `fmt` | `clippy -D warnings`, `cargo fmt --check` |
+| `abi-version` | `wit-parser`'s version must match the `wasm-tools` that ships, since they must compute the same canonical-ABI layout |
+| `representation` | compiles a Rocq function with the real CertiRocq and checks the emitted module against every claim in `repr.rs` |
+
+The last two are Python scripts under [`checks/`](checks) and run standalone in
+`nix develop` as well, which is often what you want while changing `repr.rs`.
+Both guard against the same thing: a mismatch there does not break the build,
+it makes the adapter read the wrong bytes and return plausible garbage. See
+[representation conformance](TODO.md#representation).

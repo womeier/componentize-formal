@@ -65,6 +65,9 @@
         pkgs.rustfmt
       ];
 
+      # The checks under checks/ are Python, and meant to be runnable by hand.
+      scriptTools = pkgs: [ pkgs.python3 ];
+
       # TODO.md comes along because the test suite asserts that every rejection
       # code the gate can emit has a section there. Paths are listed explicitly
       # so the build doesn't rebuild on unrelated changes.
@@ -103,10 +106,7 @@
       });
 
       # Everything CI enforces lives here, so `nix flake check` locally and CI
-      # run the same thing. Deliberately excludes the Rocq package set: these
-      # all finish in seconds, while CertiRocq is a multi-gigabyte substitution
-      # that nothing in the generator needs yet. The weekly `pin` workflow
-      # covers that separately.
+      # run the same thing.
       checks = forAllSystems (pkgs: let
         bindgen = bindgenFor pkgs;
       in {
@@ -135,37 +135,30 @@
             touch $out
           '';
 
-        # The load-bearing pin: wit-parser computes the canonical-ABI layout the
-        # adapter encodes, and `wasm-tools component new` computes the layout the
-        # host reads. They agree only because they are the same code. A drift
-        # here is exactly the silent failure this repo exists to avoid -- the
-        # component would build and return plausible garbage -- so it fails the
-        # build instead.
+        # Both scripts run standalone in `nix develop` too, and say what
+        # they concluded rather than only whether they passed.
         abi-version = pkgs.runCommand "abi-version-match"
-          { nativeBuildInputs = [ pkgs.wasm-tools ]; } ''
-            parser=$(grep -A1 'name = "wit-parser"' ${./bindgen/Cargo.lock} \
-                     | sed -n 's/^version = "[0-9]\+\.\([0-9]\+\)\..*/\1/p')
-            tools=$(wasm-tools --version \
-                    | sed -n 's/^wasm-tools [0-9]\+\.\([0-9]\+\)\..*/\1/p')
+          { nativeBuildInputs = [ pkgs.python3 pkgs.wasm-tools ]; } ''
+            python3 ${./checks/abi_version.py} --lock ${./bindgen/Cargo.lock}
+            touch $out
+          '';
 
-            # An unparsed version must not pass for a match.
-            case "$parser" in "" | *[!0-9]*)
-              echo "could not read the wit-parser version from Cargo.lock" >&2
-              exit 1 ;;
-            esac
-            case "$tools" in "" | *[!0-9]*)
-              echo "could not read the version from \`wasm-tools --version\`" >&2
-              exit 1 ;;
-            esac
-
-            if [ "$parser" != "$tools" ]; then
-              echo "wit-parser 0.$parser.x does not match wasm-tools 1.$tools.x." >&2
-              echo "The generator would compute a different canonical-ABI layout" >&2
-              echo "than the component tooling. Pin bindgen/Cargo.toml to" >&2
-              echo "wit-parser 0.$tools, or pin nixpkgs back." >&2
-              exit 1
-            fi
-            echo "wit-parser 0.$parser.x matches wasm-tools 1.$tools.x"
+        # Layer 1 of representation conformance (TODO.md#representation):
+        # compile a dull function with the real CertiRocq and read back every
+        # claim in repr.rs that is visible without running the module. repr.rs's
+        # own unit tests cannot catch the backend moving underneath them.
+        representation = pkgs.runCommand "representation-conformance"
+          {
+            nativeBuildInputs = [
+              (rocqPkgs pkgs).coq
+              (rocqPkgs pkgs).CertiRocq
+              pkgs.python3
+              pkgs.wasm-tools
+            ];
+          } ''
+            python3 ${./checks/representation.py} \
+              --rocq-source ${./checks/rocq/exports.v} \
+              --repr ${./bindgen/src/repr.rs}
             touch $out
           '';
       });
@@ -176,14 +169,15 @@
             (rocqPkgs pkgs).coq
             (rocqPkgs pkgs).CertiRocq
             pkgs.rust-analyzer
-          ] ++ rustTools pkgs ++ componentTools pkgs;
+          ] ++ rustTools pkgs ++ componentTools pkgs ++ scriptTools pkgs;
         };
 
         # The same shell without the Rocq package set, for working on the
         # generator alone -- CertiRocq is a long substitution to wait on when
         # nothing you are about to run needs it.
         bindgen = pkgs.mkShell {
-          packages = [ pkgs.rust-analyzer ] ++ rustTools pkgs ++ componentTools pkgs;
+          packages = [ pkgs.rust-analyzer ]
+            ++ rustTools pkgs ++ componentTools pkgs ++ scriptTools pkgs;
         };
       });
     };
