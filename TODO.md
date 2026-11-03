@@ -431,7 +431,9 @@ to one path.
 inductive declarations — constructor counts and arities, which is just what
 `repr.rs`'s ordinal assignment reads. Hence WIT must be the source of truth for
 interface types (it already is), and the representation is uniform across
-frontends. What a frontend can still move is the constructor order erasure
+frontends. λ□ᵗ is no way around that: its annotations come from a separate,
+*unverified* `erase_type` pass, whose soundness argument is that a typed target
+language's checker rejects bad output — a backstop Wasm does not have. What a frontend can still move is the constructor order erasure
 produces.
 
 Three things to verify rather than assume:
