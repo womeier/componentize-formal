@@ -59,12 +59,12 @@ out, accepting a bare return type and trapping instead. Details in
 | | Status |
 | --- | --- |
 | `check` — accept or reject a world, with reasons | **supported** |
-| `Iface.v`, `extraction.v`, `adapter.wat`, build rules | planned (phase 1) |
+| `Iface.v`, `extraction.v`, `adapter.wat`, build rules | not yet |
 
 ## WIT feature support
 
-Everything marked *planned* or *not planned* is **rejected with a reason and a
-pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
+Anything not marked **supported** is **rejected with a reason and a pointer
+into [`TODO.md`](TODO.md)**, never silently mishandled.
 
 ### Types
 
@@ -72,19 +72,19 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | --- | --- | --- |
 | `bool` | **supported** | tagged immediate, `false`=1, `true`=3 |
 | `u64` | **supported** | Rocq's primitive 63-bit ints (`Uint63.int`); values ≥ 2⁶³ don't fit — warned at the position, guarded in the adapter |
-| `u8`, `u16`, `u32` | [wanted, unscheduled](TODO.md#integer-widths) | a narrower width needs a range check on every lift |
+| `u8`, `u16`, `u32` | [not supported](TODO.md#integer-widths) | a narrower width needs a range check on every lift |
 | `enum` | **supported** | all-nullary inductive, `2*ord+1` |
 | `result<T, error>` as the result | **required** | the [failure channel](TODO.md#failure-channel), on every export |
 | type aliases | **supported** | looked through |
-| `option`/`result` as a value | planned (phase 2) | fixed shapes, known ordinals — no layout algorithm needed |
-| `record`, `tuple` | planned (phase 3) | needs split ordinal mapping + canonical-ABI layout |
-| `variant` | planned (phase 3) | same machinery |
-| `s8`, `s16`, `s32`, `s64` | [wanted, unscheduled](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
-| `f64` | planned (phase 4) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
+| `option`/`result` as a value | [not supported](TODO.md#option-result) | fixed shapes, known ordinals — no layout algorithm needed |
+| `record`, `tuple` | [not supported](TODO.md#structured-types) | needs split ordinal mapping + canonical-ABI layout |
+| `variant` | [not supported](TODO.md#structured-types) | same machinery |
+| `s8`, `s16`, `s32`, `s64` | [not supported](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
+| `f64` | [not supported](TODO.md#f64) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
 | `f32` | [not planned](TODO.md#f32) | `PrimFloat` is binary64 only; nothing carries an `f32` faithfully |
-| `list<T>`, fixed-length lists | [wanted, unscheduled](TODO.md#lists) | the one recursive former WIT has; shares machinery with strings |
+| `list<T>`, fixed-length lists | [not supported](TODO.md#lists) | the one recursive former WIT has; shares machinery with strings |
 | `map<K, V>` | [not planned](TODO.md#maps) | needs a key ordering with no canonical Rocq map to follow |
-| `string` | [wanted, unscheduled](TODO.md#strings) | brings `cabi_realloc` and value walking with it |
+| `string` | [not supported](TODO.md#strings) | brings `cabi_realloc` and value walking with it |
 | `char` | [not planned](TODO.md#char) | no faithful Rocq counterpart |
 | `flags` | [not planned](TODO.md#flags) | a bitfield with no Rocq counterpart |
 | `resource`, `own<T>`, `borrow<T>` | [not planned](TODO.md#resources) | needs handle tables and destructors; there is no GC |
@@ -96,15 +96,15 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | --- | --- | --- |
 | one `export name: func(x: T) -> result<U, error>` | **supported** | one argument, one result, one error channel |
 | `use` of a type-only interface | **supported** | needs no core import, so it costs nothing |
-| several parameters | planned (phase 2) | iterated closure application |
-| no parameters, or no result | planned (phase 2) | different adapter prologue |
-| several exports | planned (phase 2) | one compiled `MkExports` term carrying every closure |
-| imports | [wanted, unscheduled](TODO.md#imports) | `mod_imports := []` is baked into the correctness proof |
+| several parameters | [not supported](TODO.md#arity) | iterated closure application |
+| no parameters, or no result | [not supported](TODO.md#arity) | different adapter prologue |
+| several exports | [not supported](TODO.md#multi-export) | one compiled `MkExports` term carrying every closure |
+| imports | [not supported](TODO.md#imports) | `mod_imports := []` is baked into the correctness proof |
 | `export some:pkg/iface` | [not planned](TODO.md#exported-interfaces) | only top-level function exports |
 | Rocq as the source language | **supported** | the default, and the only one implemented |
-| Lean | [wanted, unscheduled](TODO.md#frontends) | selectable (`--frontend lean`) and rejected with a reason; the unaffiliated [Peregrine project](https://peregrine-project.github.io/) has a Lean frontend into λ□ feeding this same backend, so only the interface file and the compile driver would differ |
+| Lean | [not supported](TODO.md#frontends) | selectable (`--frontend lean`) and rejected with a reason; the unaffiliated [Peregrine project](https://peregrine-project.github.io/) has a Lean frontend into λ□ feeding this same backend, so only the interface file and the compile driver would differ |
 | Agda | [not planned](TODO.md#agda) | same route through λ□, but two frontends is the commitment |
-| verified glue | [research project](TODO.md#verified-glue) | the adapter is trusted, as the C glue is |
+| verified glue | [not supported](TODO.md#verified-glue) | the adapter is trusted, as the C glue is |
 
 ## Layout
 
