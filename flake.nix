@@ -72,6 +72,7 @@
               ./bindgen/Cargo.lock
               ./bindgen/src
               ./bindgen/tests
+              ./bindgen/wit          # the shipped certirocq:abi package
               ./TODO.md
             ];
           };
