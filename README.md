@@ -32,7 +32,7 @@ $ cd bindgen && cargo run -- check --wit world.wit
 error[E-NO-CHANNEL]: a result type with no error channel is not supported
   --> export plus1: result
   = cannot be compiled: every export must return result<T, error> with
-    certirocq:abi@0.1.0/errors.error, because this call can fail with: out of
+    certirocq:abi/errors@0.1.0.error, because this call can fail with: out of
     memory, out of range (`val` >= 2^63)
   = see TODO.md#failure-channel
 ```
@@ -66,7 +66,7 @@ use. Details in [`TODO.md#failure-channel`](TODO.md#failure-channel).
 | | Status |
 | --- | --- |
 | `check` — accept or reject a world, with reasons | **supported** |
-| `Iface.v`, `extraction.v`, `adapter.wat`, build rules | not yet |
+| `Iface.v`, `extraction.v`, `adapter.wat`, build rules | not yet — hand-written for one export in [`examples/plus1`](examples/plus1), which runs |
 
 ## WIT feature support
 
@@ -122,6 +122,7 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/src/repr.rs`](bindgen/src/repr.rs) | CertiRocq's value representation, with sources |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
+| [`examples/plus1/`](examples/plus1) | the whole pipeline for one export, hand-written in the shape generation has to emit |
 | [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |

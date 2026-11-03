@@ -1,0 +1,7 @@
+package local:demo;
+
+world wrapper-world {
+    use certirocq:abi/errors@0.1.0.{error};
+
+    export plus1: func(val: u64) -> result<u64, error>;
+}

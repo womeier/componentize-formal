@@ -214,8 +214,9 @@ fn the_error_type_is_matched_by_identity() {
     let rejection = &report.rejections[0];
     assert_eq!(rejection.code, "E-ERROR-TYPE");
     // Spelled from the shipped package so a version bump cannot leave this
-    // asserting the old name.
-    let want = format!("{}/errors.error", componentize_formal::abi_package_name());
+    // asserting the old name, and spelled the way WIT spells it -- the version
+    // attaches to the interface, so a reader can copy it into a `use`.
+    let want = format!("{}.error", componentize_formal::abi_use_path());
     assert!(rejection.note.contains(&want), "{}", rejection.note);
 }
 
@@ -311,6 +312,84 @@ fn the_config_selects_a_frontend() {
     let cfg = Config::load(&path).unwrap();
     assert_eq!(cfg.frontend, Frontend::Lean);
     assert!(cfg.frontend.ensure_supported().is_err());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A world laid out for `wasm-tools component embed` carries `certirocq:abi`
+/// under `deps/`, because that copy is what the component build reads. Pushing
+/// the shipped one as well used to make `wit-parser` panic on a duplicate
+/// package, so the vendored layout has to resolve on its own.
+#[test]
+fn a_vendored_abi_package_resolves() {
+    let dir = std::env::temp_dir().join(format!("bindgen-vendored-{}", std::process::id()));
+    let deps = dir.join("deps/certirocq-abi");
+    std::fs::create_dir_all(&deps).unwrap();
+    std::fs::write(deps.join("errors.wit"), componentize_formal::ABI_WIT).unwrap();
+    std::fs::write(
+        dir.join("world.wit"),
+        format!(
+            "package local:vendored;\nworld w {{\n  use {}.{{error}};\n  \
+             export plus1: func(val: u64) -> result<u64, error>;\n}}\n",
+            componentize_formal::abi_use_path()
+        ),
+    )
+    .unwrap();
+
+    let (resolve, world) = resolve_world(&dir, None)
+        .unwrap_or_else(|e| panic!("a vendored deps/ layout must resolve: {e:#}"));
+    let report = support::check_world(&resolve, world);
+    assert!(
+        report.is_ok(),
+        "{}",
+        report
+            .rejections
+            .iter()
+            .map(|r| r.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A vendored copy is trusted for its name by the gate, so its contents have
+/// to be checked here. Same version, different case order means the adapter
+/// writes one discriminant while the component declares another -- the exact
+/// silent failure the version is supposed to prevent.
+#[test]
+fn a_vendored_abi_package_must_match_the_shipped_one() {
+    let shipped = componentize_formal::abi_package_name();
+    let use_path = componentize_formal::abi_use_path();
+    let dir = std::env::temp_dir().join(format!("bindgen-vendored-skew-{}", std::process::id()));
+    let deps = dir.join("deps/certirocq-abi");
+    std::fs::create_dir_all(&deps).unwrap();
+
+    // The shipped cases in the other order: same name, same version, different
+    // discriminants.
+    std::fs::write(
+        deps.join("errors.wit"),
+        format!(
+            "package {shipped};\ninterface errors {{\n  \
+             enum error {{ out-of-range, out-of-memory }}\n}}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("world.wit"),
+        format!(
+            "package local:skewed;\nworld w {{\n  use {use_path}.{{error}};\n  \
+             export plus1: func(val: u64) -> result<u64, error>;\n}}\n"
+        ),
+    )
+    .unwrap();
+
+    let err = format!(
+        "{:#}",
+        resolve_world(&dir, None).expect_err("reordered cases are a different type")
+    );
+    assert!(err.contains("out-of-range"), "{err}");
+    assert!(err.contains("TODO.md#abi-package-version"), "{err}");
 
     std::fs::remove_dir_all(&dir).ok();
 }

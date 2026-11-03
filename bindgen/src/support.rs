@@ -402,12 +402,7 @@ fn payloads(resolve: &Resolve, ty: Type) -> Option<Vec<Type>> {
 
 /// The shipped error enum, written the way a world has to spell it.
 fn abi_error_name() -> String {
-    format!(
-        "{}/{}.{}",
-        crate::abi_package_name(),
-        crate::ABI_INTERFACE,
-        crate::ABI_ERROR
-    )
+    format!("{}.{}", crate::abi_use_path(), crate::ABI_ERROR)
 }
 
 /// What the declared result type can report through.
