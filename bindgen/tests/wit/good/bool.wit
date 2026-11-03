@@ -1,5 +1,5 @@
 package local:ok;
 world w {
-  use certirocq:abi/errors.{error};
+  use certirocq:abi/errors@0.1.0.{error};
   export negb: func(val: bool) -> result<bool, error>;
 }

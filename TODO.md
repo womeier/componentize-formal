@@ -86,7 +86,7 @@ Every export must return `result<T, error>` with the `error` enum from the
 
 ```wit
 world wrapper-world {
-  use certirocq:abi/errors.{error};
+  use certirocq:abi/errors@0.1.0.{error};
   export plus1: func(val: u64) -> result<u64, error>;
 }
 ```
@@ -108,9 +108,10 @@ ways, and `none` cannot say which.
 The gate computes the failure modes a signature can produce and names them in
 the rejection, so the shortfall is visible rather than inferred.
 
-The error type is matched **by package, interface and type name**, not by its
-cases, so a look-alike enum of your own is rejected (`E-ERROR-TYPE`) instead of
-being populated with cases that happen to line up.
+The error type is matched **by package, version, interface and type name**, not
+by its cases, so a look-alike enum of your own is rejected (`E-ERROR-TYPE`)
+instead of being populated with cases that happen to line up — see
+[versioning](#abi-package-version).
 
 **There is no opt-out.** A trapping export takes the whole instance down and
 tells its caller nothing it can act on, which is not a contract worth
@@ -120,6 +121,28 @@ write, test and keep conforming for no gain.
 The enum never appears on the Rocq side. `func(x: u64) -> result<u64, error>`
 asks you for `plus1 : int -> int` — a Rocq function cannot run out of memory in
 its own type, and nothing in Rocq knows a value has to fit a WIT width.
+
+### <a id="abi-package-version"></a>The shipped package is versioned
+
+`package certirocq:abi@0.1.0`, and a world has to spell the version:
+`use certirocq:abi/errors@0.1.0.{error}`.
+
+The version is part of the type's identity, not decoration. An `enum`'s case
+order *is* its discriminant in the canonical ABI, so appending a case to `error`
+changes what the adapter's `i32` means, and a world written against a different
+case list would line up silently. So the gate matches package, **version**,
+interface and type name — and the shipped version is read off
+[`certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) rather than restated in
+Rust, so the two cannot drift.
+
+Only one version is ever in play: the generator pushes its own copy into the
+resolve, so a world asking for another fails to resolve, and the error names the
+version that is shipped.
+
+When the enum does change: adding a case breaks anyone reading the old one, so
+while this is `0.x` it takes the minor (semver's breaking slot below 1.0), and
+the major afterwards. The version exists to announce the change, not to promise
+compatibility across it.
 
 ### <a id="refinement-types"></a>Idea: refinement types for the narrow widths
 

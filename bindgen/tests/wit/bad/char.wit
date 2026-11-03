@@ -1,6 +1,6 @@
 package local:bad;
 
 world w {
-  use certirocq:abi/errors.{error};
+  use certirocq:abi/errors@0.1.0.{error};
   export up: func(c: char) -> result<u64, error>;
 }

@@ -1,4 +1,4 @@
-package certirocq:abi;
+package certirocq:abi@0.1.0;
 
 /// Failure modes the generated adapter can report.
 ///

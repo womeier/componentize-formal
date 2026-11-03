@@ -161,7 +161,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
                 "imports",
                 IMPORT_NOTE,
             ),
-            // `use certirocq:abi/errors.{error}` pulls the interface in here.
+            // `use certirocq:abi/errors@<ver>.{error}` pulls the interface in here.
             // A type-only interface contributes nothing to the core module's
             // imports, so it costs nothing; one with functions is a real
             // import.
@@ -365,9 +365,9 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
                     Reason::Malformed,
                     "failure-channel",
                     format!(
-                        "the error half must be certirocq:abi/errors.error, which is the \
-                         only type the adapter knows how to populate; this call can fail \
-                         with: {listed}"
+                        "the error half must be {abi}, which is the only type the adapter \
+                         knows how to populate; this call can fail with: {listed}",
+                        abi = abi_error_name()
                     ),
                 ),
                 _ => rep.reject(
@@ -377,9 +377,9 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
                     Reason::Malformed,
                     "failure-channel",
                     format!(
-                        "every export must return result<T, error> with \
-                         certirocq:abi/errors.error, because this call can fail with: \
-                         {listed}"
+                        "every export must return result<T, error> with {abi}, because \
+                         this call can fail with: {listed}",
+                        abi = abi_error_name()
                     ),
                 ),
             }
@@ -398,6 +398,16 @@ fn payloads(resolve: &Resolve, ty: Type) -> Option<Vec<Type>> {
         TypeDefKind::Result(r) => Some(r.ok.into_iter().chain(r.err).collect()),
         _ => None,
     }
+}
+
+/// The shipped error enum, written the way a world has to spell it.
+fn abi_error_name() -> String {
+    format!(
+        "{}/{}.{}",
+        crate::abi_package_name(),
+        crate::ABI_INTERFACE,
+        crate::ABI_ERROR
+    )
 }
 
 /// What the declared result type can report through.
@@ -427,15 +437,16 @@ fn channel(resolve: &Resolve, ty: Type) -> Channel {
 
 /// Is this the `error` enum from the shipped `certirocq:abi` package?
 ///
-/// Checked by package, interface and type name rather than by case names, so a
-/// look-alike enum of the user's own is rejected instead of being populated
-/// with cases that happen to line up.
+/// Checked by package name, version, interface and type name rather than by
+/// case names, so neither a look-alike enum of the user's own nor the `error`
+/// of another version of this package is populated with cases that happen to
+/// line up.
 fn is_abi_error(resolve: &Resolve, ty: Type) -> bool {
     let Type::Id(id) = ty else {
         return false;
     };
     let def = &resolve.types[id];
-    // `use certirocq:abi/errors.{error}` introduces an alias owned by the
+    // `use certirocq:abi/errors@<ver>.{error}` introduces an alias owned by the
     // world, so follow it to the interface that actually defines the enum.
     if let TypeDefKind::Type(inner) = def.kind {
         return is_abi_error(resolve, inner);
@@ -450,10 +461,9 @@ fn is_abi_error(resolve: &Resolve, ty: Type) -> bool {
     if iface.name.as_deref() != Some(crate::ABI_INTERFACE) {
         return false;
     }
-    iface.package.is_some_and(|pkg| {
-        let name = &resolve.packages[pkg].name;
-        (name.namespace.as_str(), name.name.as_str()) == crate::ABI_PACKAGE
-    })
+    iface
+        .package
+        .is_some_and(|pkg| &resolve.packages[pkg].name == crate::abi_package_name())
 }
 
 /// Every way a call to this export can fail.

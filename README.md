@@ -32,8 +32,8 @@ $ cd bindgen && cargo run -- check --wit world.wit
 error[E-NO-CHANNEL]: a result type with no error channel is not supported
   --> export plus1: result
   = cannot be compiled: every export must return result<T, error> with
-    certirocq:abi/errors.error, because this call can fail with: out of memory,
-    out of range (`val` >= 2^63)
+    certirocq:abi@0.1.0/errors.error, because this call can fail with: out of
+    memory, out of range (`val` >= 2^63)
   = see TODO.md#failure-channel
 ```
 
@@ -50,7 +50,7 @@ the signature can produce:
 package local:demo;
 
 world wrapper-world {
-  use certirocq:abi/errors.{error};
+  use certirocq:abi/errors@0.1.0.{error};
   export plus1: func(val: u64) -> result<u64, error>;
 }
 ```

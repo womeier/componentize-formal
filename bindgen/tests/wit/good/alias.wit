@@ -1,6 +1,6 @@
 package local:ok;
 world w {
-  use certirocq:abi/errors.{error};
+  use certirocq:abi/errors@0.1.0.{error};
   type answer = result<u64, error>;
   export ask: func(q: u64) -> answer;
 }

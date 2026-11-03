@@ -213,11 +213,10 @@ fn the_error_type_is_matched_by_identity() {
     let report = report(&fixture("bad", "error-type.wit"));
     let rejection = &report.rejections[0];
     assert_eq!(rejection.code, "E-ERROR-TYPE");
-    assert!(
-        rejection.note.contains("certirocq:abi/errors.error"),
-        "{}",
-        rejection.note
-    );
+    // Spelled from the shipped package so a version bump cannot leave this
+    // asserting the old name.
+    let want = format!("{}/errors.error", componentize_formal::abi_package_name());
+    assert!(rejection.note.contains(&want), "{}", rejection.note);
 }
 
 /// The failure modes a signature can produce are named, so the shortfall is
@@ -233,9 +232,44 @@ fn names_the_failure_modes() {
 /// The shipped package resolves without the world vendoring a deps/ tree.
 #[test]
 fn the_shipped_abi_package_is_available() {
-    assert!(componentize_formal::ABI_WIT.contains("package certirocq:abi;"));
+    assert!(componentize_formal::ABI_WIT.contains("package certirocq:abi@"));
     // good/scalars.wit `use`s it; resolving at all proves it is reachable.
     assert!(report(&fixture("good", "scalars.wit")).is_ok());
+}
+
+/// The `error` enum is versioned, and the version is part of its identity: an
+/// enum's case order is its discriminant in the canonical ABI, so an `error`
+/// from another version of the package is a different type. A world asking for
+/// one must be told which version is shipped, not left with a bare "package
+/// not found".
+#[test]
+fn the_abi_package_is_versioned() {
+    let shipped = componentize_formal::abi_package_name();
+    assert!(shipped.version.is_some(), "{shipped}");
+
+    let dir = std::env::temp_dir().join(format!("bindgen-abi-version-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("skew.wit");
+    std::fs::write(
+        &path,
+        "package local:skew;\nworld w {\n  \
+         use certirocq:abi/errors@9.9.9.{error};\n  \
+         export plus1: func(val: u64) -> result<u64, error>;\n}\n",
+    )
+    .unwrap();
+
+    let err = format!(
+        "{:#}",
+        resolve_world(&path, None).expect_err("a version we do not ship must not resolve")
+    );
+    assert!(err.contains(&shipped.to_string()), "{err}");
+    assert!(err.contains("TODO.md#abi-package-version"), "{err}");
+
+    let todo = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../TODO.md"))
+        .expect("TODO.md");
+    assert!(todo.contains("<a id=\"abi-package-version\"></a>"));
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Rocq is the default and the only implemented frontend. Selecting another
