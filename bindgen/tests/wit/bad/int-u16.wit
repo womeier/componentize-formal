@@ -1,0 +1,2 @@
+package local:bad;
+world w { export narrow: func(x: u16) -> option<u16>; }

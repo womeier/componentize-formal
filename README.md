@@ -49,12 +49,13 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | --- | --- | --- |
 | `bool` | **supported** | tagged immediate, `false`=1, `true`=3 |
 | `u64` | **supported** | Rocq's primitive 63-bit ints (`Uint63.int`); values ≥ 2⁶³ don't fit — warned at the position, guarded in the adapter |
-| `u32` | [not planned](TODO.md#integer-widths) | a narrower width needs a range check on every lift |
+| `u8`, `u16`, `u32` | [wanted, unscheduled](TODO.md#integer-widths) | a narrower width needs a range check on every lift |
 | `enum` | **supported** | all-nullary inductive, `2*ord+1` |
 | `option<T>`, `result<T, E>` as the result | **supported** | doubles as the out-of-memory channel |
 | type aliases | **supported** | looked through |
-| `record`, `tuple`, `variant` | planned (phase 3) | needs split ordinal mapping + canonical-ABI layout |
-| nested `option`/`result` | planned (phase 3) | same machinery |
+| `option`/`result` as a parameter, or nested | planned (phase 2) | fixed shapes, known ordinals — no layout algorithm needed |
+| `record`, `tuple` | planned (phase 3) | needs split ordinal mapping + canonical-ABI layout |
+| `variant` | planned (phase 3) | same machinery |
 | `s8`, `s16`, `s32`, `s64` | [wanted, unscheduled](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
 | `f64` | planned (phase 4) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
 | `f32` | [not planned](TODO.md#f32) | `PrimFloat` is binary64 only; nothing carries an `f32` faithfully |
@@ -83,6 +84,7 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | --- | --- |
 | [`bindgen/`](bindgen) | the generator, Rust, on `wit-parser` |
 | [`bindgen/src/support.rs`](bindgen/src/support.rs) | the support gate |
+| [`bindgen/src/repr.rs`](bindgen/src/repr.rs) | CertiRocq's value representation, with sources |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 

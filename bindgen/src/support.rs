@@ -319,16 +319,17 @@ fn is_oom_channel(resolve: &Resolve, ty: Type) -> bool {
 /// needs the full canonical-ABI layout work.
 fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut Report) {
     match ty {
-        // Unsigned integers are carried by Rocq's primitive 63-bit ints.
-        Type::Bool | Type::U8 | Type::U16 => {}
-        Type::U32 => rep.reject(
+        // Integers are carried by Rocq's primitive 63-bit ints, and u64 is the
+        // only width wired up so far.
+        Type::Bool => {}
+        Type::U8 | Type::U16 | Type::U32 => rep.reject(
             "E-INT-WIDTH",
-            "u32",
+            unsigned_name(ty),
             site.to_string(),
-            Reason::OutOfScope,
+            Reason::Later,
             "integer-widths",
-            "u64 is the supported width; a narrower type needs a range check on the way back \
-             out, because nothing stops the Rocq side returning a larger int",
+            "u64 is the only width carried so far; a narrower one also needs a range check \
+             on the way back out, because nothing stops the Rocq side returning a larger int",
         ),
         Type::U64 => rep.warnings.push(format!(
             "{site}: u64 is carried by Uint63.int, so values >= 2^63 are not representable; \
@@ -410,13 +411,13 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
                 walk(resolve, *inner, pos, false, site, rep);
             } else {
                 rep.reject(
-                    "E-STRUCTURED",
+                    "E-OPTION",
                     format!("option<_> ({shown})"),
                     site.to_string(),
-                    Reason::Planned(3),
-                    "structured-types",
-                    "only a top-level option in the result position is handled so far, as the \
-                     out-of-memory channel",
+                    Reason::Planned(2),
+                    "option-result",
+                    "handled in the result position, where it carries the out-of-memory \
+                     signal; as a parameter or nested it still needs lowering into the heap",
                 );
             }
         }
@@ -430,13 +431,13 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
                 }
             } else {
                 rep.reject(
-                    "E-STRUCTURED",
+                    "E-OPTION",
                     format!("result<_, _> ({shown})"),
                     site.to_string(),
-                    Reason::Planned(3),
-                    "structured-types",
-                    "only a top-level result in the result position is handled so far, as the \
-                     out-of-memory channel",
+                    Reason::Planned(2),
+                    "option-result",
+                    "handled in the result position, where it carries the out-of-memory \
+                     signal; as a parameter or nested it still needs lowering into the heap",
                 );
             }
         }
@@ -506,6 +507,14 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
             "imports",
             "the world did not resolve; this usually means a missing dependency package",
         ),
+    }
+}
+
+fn unsigned_name(ty: Type) -> &'static str {
+    match ty {
+        Type::U8 => "u8",
+        Type::U16 => "u16",
+        _ => "u32",
     }
 }
 

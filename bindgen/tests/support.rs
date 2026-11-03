@@ -88,8 +88,6 @@ fn rejects_what_the_backend_cannot_represent() {
     expect_bad("flags.wit", &["E-FLAGS"]);
     // The resource type and its method are both reported.
     expect_bad("resource.wit", &["E-RESOURCE"]);
-    // u32 in both the parameter and the result, reported once per position.
-    expect_bad("int-width.wit", &["E-INT-WIDTH"]);
 }
 
 #[test]
@@ -97,11 +95,18 @@ fn rejects_what_is_merely_unbuilt() {
     expect_bad("signed.wit", &["E-SIGNED"]);
     expect_bad("float.wit", &["E-FLOAT"]);
     expect_bad("structured.wit", &["E-STRUCTURED"]);
-    expect_bad("nested-option.wit", &["E-STRUCTURED"]);
+    // option and result are supported where they carry the out-of-memory
+    // signal; the other positions need lowering into the heap.
+    expect_bad("nested-option.wit", &["E-OPTION"]);
+    expect_bad("option-param.wit", &["E-OPTION"]);
     expect_bad("arity.wit", &["E-ARITY-N"]);
     expect_bad("nullary.wit", &["E-ARITY-0"]);
     expect_bad("no-result.wit", &["E-NO-RESULT"]);
     expect_bad("multi-export.wit", &["E-MULTI-EXPORT"]);
+    // u64 is the only integer width carried so far.
+    for width in ["u8", "u16", "u32"] {
+        expect_bad(&format!("int-{width}.wit"), &["E-INT-WIDTH"]);
+    }
 }
 
 #[test]

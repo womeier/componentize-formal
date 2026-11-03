@@ -26,8 +26,9 @@ section.
 | --- | --- | --- |
 | `E-ARITY-0`, `E-ARITY-N`, `E-NO-RESULT` | exports that aren't one-in-one-out | [planned, phase 2](#arity) |
 | `E-MULTI-EXPORT` | more than one exported function | [planned, phase 2](#multi-export) |
-| `E-STRUCTURED` | `record`, `tuple`, `variant`, nested `option`/`result` | [planned, phase 3](#structured-types) |
-| `E-INT-WIDTH` | `u32` | [not planned](#integer-widths) |
+| `E-OPTION` | `option`/`result` as a parameter or nested | [planned, phase 2](#option-result) |
+| `E-STRUCTURED` | `record`, `tuple`, `variant` | [planned, phase 3](#structured-types) |
+| `E-INT-WIDTH` | `u8`, `u16`, `u32` | [wanted, not scheduled](#integer-widths) |
 | `E-SIGNED` | `s8`, `s16`, `s32`, `s64` | [wanted, not scheduled](#signed-integers) |
 | `E-FLOAT` | `f64` | [planned, phase 4](#f64) |
 | `E-FLOAT` | `f32` | [not planned](#f32) |
@@ -61,6 +62,46 @@ A wrong adapter does not announce itself: it reads the wrong bytes and
 - Out-of-memory is never swallowed. `glob_out_of_mem` is checked after every
   call, and reported through `none`/`err` where the result type allows it and a
   trap where it does not.
+
+## <a id="representation"></a>Representation conformance
+
+The adapter bakes CertiRocq's value representation into loads, stores and
+offsets. Nothing about that is checked by the compiler on either side, so it
+needs its own tests, in two layers.
+
+**Layer 1 — the formulas, which exists now.** Every constant lives in
+[`bindgen/src/repr.rs`](bindgen/src/repr.rs) with the source it came from, and
+its unit tests pin the formulas against the values the hand-written adapters in
+`testing/examples/component/{plus1,negb}` encode by hand: `false`=1, `true`=3,
+closure fields at 4 and 8, `(env, arg) -> ()` at type index 2, and `option`'s
+per-class ordinals. This catches a mistake in `repr.rs`. It cannot catch the
+backend changing underneath it.
+
+**Layer 2 — the backend's actual behaviour, phase 1.** One case per supported
+representation, each a small Rocq definition plus a world, run through the whole
+pipeline — `rocq c`, patch the table export, `wasm-merge`, `component embed`,
+`component new`, `wasmtime run --invoke` — asserting the value that comes back:
+
+| Case | Pins |
+| --- | --- |
+| `fun b => b` at `bool` | the tagged immediate, both ways |
+| an `enum` of three, returning the first, a middle and the last | nullary ordinals being the declaration index |
+| `fun n => n` at `u64`, with 0 and 2⁶³−1 | the boxed primitive int, and the range guard |
+| a function returning `None`, and one returning `Some` | `option`'s per-class ordinals |
+| a deliberately allocating function | the out-of-memory channel actually firing |
+| two and three exports | `MkExports` field offsets (phase 2) |
+| `f64` round-trip | the boxed float, once `wasm-prim-floats` lands (phase 4) |
+
+This is the only check that ties `repr.rs` to the compiler, so it should run in
+`nix flake check` rather than on demand — otherwise a CertiRocq bump can land
+without anyone noticing the representation moved. It needs CertiRocq and
+`wasmtime`, both already in the dev shell, and it cannot be written before the
+generator emits adapters, which is why it is phase 1 and not now.
+
+For the canonical-ABI half of the same problem, the equivalent check is
+differential: generate layouts and diff them against what `cargo component`
+produces for the matching Rust signature — see
+[structured types](#structured-types).
 
 ---
 
@@ -108,10 +149,25 @@ get its closure and proceeds as the one-export case does. A Rocq tuple would
 walk instead of a flat index. `n = 1` skips the wrapper, keeping the generated
 adapter comparable to the hand-written `plus1` one.
 
+### <a id="option-result"></a>`option` and `result` elsewhere — `E-OPTION`, phase 2
+
+Both are already supported as the result type, which is where they carry the
+out-of-memory signal. As a *parameter*, or nested inside another type, they
+still need lowering into the heap — but that is much cheaper than the general
+[structured-type](#structured-types) work, because their shapes are fixed and
+their ordinals are known rather than derived:
+
+| | CertiRocq | WIT |
+| --- | --- | --- |
+| `None` / `err` with no payload | nullary, unboxed ordinal 0 → immediate `1` | discriminant 0 |
+| `Some x` / `ok x` | boxed ordinal 0 → pointer to `[0, x]` | discriminant 1, payload |
+
+So no layout algorithm is needed, just the two cases.
+
 ### <a id="structured-types"></a>Records, tuples and variants — `E-STRUCTURED`, phase 3
 
-`record`, `tuple`, `variant`, and any `option`/`result` that isn't the top-level
-result type. Two halves:
+`record`, `tuple` and `variant`, in any position. (`option` and `result` have
+their own, cheaper path — see [above](#option-result).) Two halves:
 
 1. **Our side.** CertiRocq assigns constructor ordinals *separately per class* —
    `match_ordinals_with_tag` (`theories/Glue/glue.v:947-960`) walks constructors
@@ -124,8 +180,10 @@ result type. Two halves:
    which is exactly why the tool computes it with `wit_parser::SizeAlign`, the
    same code `wasm-tools component new` uses, instead of reimplementing it.
 
-A top-level `option<T>`/`result<T, E>` result is already accepted, because
-that is the out-of-memory channel rather than a structured type.
+`record` and `tuple` are the ones that matter most, since a user-defined record
+is how any multi-field value crosses the boundary. A single-constructor
+inductive of arity *n* boxes as `[ord, f₀, …, fₙ₋₁]`, so the Rocq side is
+straightforward; the canonical-ABI side is where the care goes.
 
 ### <a id="f64"></a>`f64` — `E-FLOAT`, phase 4
 
@@ -143,6 +201,15 @@ bits. Worth checking against `wasm-tools` rather than assuming.
 ---
 
 ## Wanted, not scheduled
+
+### <a id="integer-widths"></a>Narrow unsigned integers — `E-INT-WIDTH`
+
+`u8`, `u16` and `u32` are rejected for now; `u64` is the only width carried.
+They are exactly representable in a 63-bit int on the way *in*, but not on the
+way *out*: nothing stops the Rocq side returning an `int` larger than the
+declared width, so every lift needs a range check and somewhere to report the
+overflow. `u64` needs a guard in one direction only, which is why it came
+first.
 
 ### <a id="signed-integers"></a>Signed integers — `E-SIGNED`
 
@@ -179,14 +246,6 @@ phased. `map` additionally needs a key ordering both sides agree on.
 A `string` is a list of bytes plus an encoding choice that `canon lift` forces
 on you, so it needs everything [lists](#lists) need and a decision about
 `string` vs `list ascii` vs a byte array on the Rocq side.
-
-### <a id="integer-widths"></a>32-bit integers — `E-INT-WIDTH`
-
-`u64` is the supported width. A narrower type is exactly representable in a
-63-bit int on the way *in*, but not on the way *out*: nothing stops the Rocq
-side returning an `int` larger than the declared width, so every lift would
-need a range check and a way to report the overflow. `u64` needs the guard in
-one direction only, which is the asymmetry that makes it the width to carry.
 
 ### <a id="f32"></a>`f32` — `E-FLOAT`
 

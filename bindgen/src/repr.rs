@@ -1,0 +1,175 @@
+//! CertiRocq's Wasm value representation, in one place.
+//!
+//! Every constant here is an assumption the generated adapter bakes into
+//! loads, stores and offsets. If the backend changes one of them, the adapter
+//! does not fail -- it reads the wrong bytes and `wasmtime` returns plausible
+//! garbage. So they live together, each with the source it came from, rather
+//! than scattered through the emitter as literals.
+//!
+//! The unit tests below pin the formulas against the values in the
+//! hand-written adapters in `testing/examples/component/{plus1,negb}`. That
+//! catches a mistake in *this* file. It cannot catch the backend changing
+//! underneath it -- only running the real pipeline can, which is what the
+//! representation-conformance suite is for (`TODO.md#representation`).
+
+/// Exports the backend puts on the module it emits.
+///
+/// `LambdaANF_to_Wasm.v:553-570`. Note the table is *not* among them, which is
+/// why the build patches it in before `wasm-merge`.
+pub mod exports {
+    pub const MEMORY: &str = "memory";
+    pub const MEM_PTR: &str = "mem_ptr";
+    pub const RESULT: &str = "result";
+    pub const OUT_OF_MEM: &str = "out_of_mem";
+    pub const MAIN_FUNCTION: &str = "main_function";
+    /// Added by `patch-table`, not by the backend.
+    pub const TABLE: &str = "__indirect_function_table";
+}
+
+/// A nullary constructor is an immediate, not a pointer.
+///
+/// `LambdaANF_to_Wasm.v:161`. Ordinals count nullary constructors only, in
+/// declaration order -- see [`ordinal`].
+pub const fn nullary_immediate(ordinal: u32) -> u32 {
+    2 * ordinal + 1
+}
+
+/// The inverse, for lifting a nullary constructor back out.
+pub const fn immediate_ordinal(value: u32) -> u32 {
+    value >> 1
+}
+
+/// `false` and `true` as the backend represents them.
+pub const BOOL_FALSE: u32 = nullary_immediate(0);
+pub const BOOL_TRUE: u32 = nullary_immediate(1);
+
+/// A non-nullary constructor is a pointer to `[ord, f0, f1, ...]`, one 4-byte
+/// cell each (`LambdaANF_to_Wasm.v:161`).
+pub const BOXED_ORDINAL_OFFSET: u32 = 0;
+pub const CELL: u32 = 4;
+
+/// Byte offset of field `index` from a boxed constructor's pointer.
+pub const fn boxed_field_offset(index: u32) -> u32 {
+    CELL * (index + 1)
+}
+
+/// A closure is an ordinary boxed constructor: `[tag, func_idx, env_ptr]`.
+/// Function variables are passed as an immediate funcidx
+/// (`LambdaANF_to_Wasm.v:110`), so field 0 is the index and field 1 the
+/// environment.
+pub const CLOSURE_FUNC_IDX_OFFSET: u32 = boxed_field_offset(0);
+pub const CLOSURE_ENV_OFFSET: u32 = boxed_field_offset(1);
+
+/// A primitive value is boxed: a pointer to 8 bytes holding the payload
+/// (`Eprim_val`, `LambdaANF_to_Wasm.v:386-400`). Primitive ints store an i64
+/// there; on the `wasm-prim-floats` branch an f64 goes in the same place.
+pub const PRIM_PAYLOAD_SIZE: u32 = 8;
+
+/// What the backend bumps `mem_ptr` by for a primitive value: the payload plus
+/// 24 bytes of slack the invariants want (`LambdaANF_to_Wasm.v:401`).
+pub const PRIM_ALLOC_SIZE: u32 = 32;
+
+/// Every Rocq function has type `[i32; n] -> []`, and `list_function_types`
+/// builds them in order, so the type index *is* the argument count
+/// (`LambdaANF_to_Wasm.v:512`).
+pub const fn func_type_index(args: u32) -> u32 {
+    args
+}
+
+/// Constructor ordinals, which are **not** the declaration index.
+///
+/// `match_ordinals_with_tag` (`theories/Glue/glue.v:947-960`) walks the
+/// constructors keeping independent counters for boxed and unboxed ones, so a
+/// type mixing the two has each class numbered from zero. WIT's discriminant
+/// is the declaration index, so the two need a translation table rather than
+/// an offset.
+pub mod ordinal {
+    /// Assign CertiRocq ordinals to constructors given their arities, in
+    /// declaration order. Returns one entry per constructor: its ordinal, and
+    /// whether it is boxed.
+    pub fn assign(arities: &[u32]) -> Vec<(u32, bool)> {
+        let mut boxed = 0;
+        let mut unboxed = 0;
+        arities
+            .iter()
+            .map(|&arity| {
+                if arity == 0 {
+                    let ord = unboxed;
+                    unboxed += 1;
+                    (ord, false)
+                } else {
+                    let ord = boxed;
+                    boxed += 1;
+                    (ord, true)
+                }
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The values the hand-written `negb` adapter encodes by hand.
+    #[test]
+    fn bools_match_the_handwritten_adapter() {
+        assert_eq!(BOOL_FALSE, 1);
+        assert_eq!(BOOL_TRUE, 3);
+        assert_eq!(immediate_ordinal(BOOL_FALSE), 0);
+        assert_eq!(immediate_ordinal(BOOL_TRUE), 1);
+    }
+
+    /// The offsets the hand-written `plus1` adapter encodes by hand.
+    #[test]
+    fn closure_layout_matches_the_handwritten_adapter() {
+        assert_eq!(CLOSURE_FUNC_IDX_OFFSET, 4);
+        assert_eq!(CLOSURE_ENV_OFFSET, 8);
+    }
+
+    /// `(env, arg) -> ()` is type index 2, which is what `$rocq_func` is
+    /// declared as in both hand-written adapters.
+    #[test]
+    fn the_two_argument_function_type_is_index_two() {
+        assert_eq!(func_type_index(2), 2);
+    }
+
+    /// Export *i* of an n-ary `MkExports` sits at `4*(i+1)`.
+    #[test]
+    fn export_fields_are_flat() {
+        assert_eq!(boxed_field_offset(0), 4);
+        assert_eq!(boxed_field_offset(1), 8);
+        assert_eq!(boxed_field_offset(2), 12);
+    }
+
+    /// `option`: `None` is nullary and `Some` is boxed, so both get ordinal 0
+    /// in their own class. This is the case that makes the declaration index
+    /// the wrong thing to use.
+    #[test]
+    fn option_ordinals_are_per_class() {
+        // `None` first, then `Some _`.
+        assert_eq!(ordinal::assign(&[0, 1]), vec![(0, false), (0, true)]);
+        assert_eq!(nullary_immediate(0), 1, "None is the immediate 1");
+    }
+
+    /// A type mixing boxed and unboxed constructors numbers each class from
+    /// zero, independently of where they appear.
+    #[test]
+    fn mixed_constructors_number_each_class_from_zero() {
+        //              A    B(x)  C    D(x,y)  E
+        let arities = [0u32, 1, 0, 2, 0];
+        assert_eq!(
+            ordinal::assign(&arities),
+            vec![(0, false), (0, true), (1, false), (1, true), (2, false)]
+        );
+    }
+
+    /// All-nullary types are the easy case: ordinal is the declaration index.
+    #[test]
+    fn enum_ordinals_are_the_declaration_index() {
+        assert_eq!(
+            ordinal::assign(&[0, 0, 0]),
+            vec![(0, false), (1, false), (2, false)]
+        );
+    }
+}

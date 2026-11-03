@@ -2,6 +2,7 @@
 //! glue from a WIT world.
 
 pub mod config;
+pub mod repr;
 pub mod support;
 
 use anyhow::{Context, Result};
