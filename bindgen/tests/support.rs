@@ -256,3 +256,46 @@ fn the_shipped_abi_package_is_available() {
     // good/scalars.wit `use`s it; resolving at all proves it is reachable.
     assert!(report(&fixture("good", "scalars.wit")).is_ok());
 }
+
+/// Rocq is the default and the only implemented frontend. Selecting another
+/// must fail: generating Rocq artefacts for someone who asked for Lean would be
+/// precisely the silent failure this tool is built to avoid.
+#[test]
+fn only_the_rocq_frontend_is_implemented() {
+    use rocq_component_bindgen::config::Frontend;
+
+    assert_eq!(Frontend::default(), Frontend::Rocq);
+    assert!(Frontend::Rocq.ensure_supported().is_ok());
+
+    let err = Frontend::Lean
+        .ensure_supported()
+        .expect_err("lean must be rejected")
+        .to_string();
+    assert!(err.contains("not implemented yet"), "{err}");
+    // Held to the same standard as the WIT rejections: it points somewhere.
+    assert!(err.contains("TODO.md#frontends"), "{err}");
+
+    let todo = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../TODO.md"))
+        .expect("TODO.md");
+    assert!(todo.contains("<a id=\"frontends\"></a>"));
+}
+
+/// The frontend is selectable from the config file, not only the flag.
+#[test]
+fn the_config_selects_a_frontend() {
+    use rocq_component_bindgen::config::{Config, Frontend};
+
+    let dir = std::env::temp_dir().join(format!("bindgen-frontend-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let path = dir.join("component.toml");
+    std::fs::write(&path, "wit = \"world.wit\"\n").unwrap();
+    assert_eq!(Config::load(&path).unwrap().frontend, Frontend::Rocq);
+
+    std::fs::write(&path, "wit = \"world.wit\"\nfrontend = \"lean\"\n").unwrap();
+    let cfg = Config::load(&path).unwrap();
+    assert_eq!(cfg.frontend, Frontend::Lean);
+    assert!(cfg.frontend.ensure_supported().is_err());
+
+    std::fs::remove_dir_all(&dir).ok();
+}

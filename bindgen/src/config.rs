@@ -15,6 +15,9 @@ use serde::Deserialize;
 pub struct Config {
     /// The WIT file or directory, relative to this config file.
     pub wit: PathBuf,
+    /// The proof assistant the implementation is written in.
+    #[serde(default)]
+    pub frontend: Frontend,
     /// Required only when the package declares more than one world.
     #[serde(default)]
     pub world: Option<String>,
@@ -63,6 +66,48 @@ pub struct CertiRocqConfig {
 pub struct AbiConfig {
     #[serde(default)]
     pub oom: Oom,
+}
+
+/// Which proof assistant the implementation is written in.
+///
+/// Both reach this Wasm backend through λ□, so the adapter, the build rules
+/// and the support gate are shared; what differs is the interface file and the
+/// compile driver. Only Rocq is implemented, and `lean` is rejected rather
+/// than quietly treated as `rocq` -- see `TODO.md#frontends`.
+#[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Frontend {
+    #[default]
+    Rocq,
+    Lean,
+}
+
+impl Frontend {
+    pub fn name(self) -> &'static str {
+        match self {
+            Frontend::Rocq => "rocq",
+            Frontend::Lean => "lean",
+        }
+    }
+
+    /// Fail unless this frontend is actually implemented.
+    ///
+    /// Selecting an unimplemented one has to be an error: generating Rocq
+    /// artefacts for someone who asked for Lean would be the exact silent
+    /// failure this tool exists to avoid.
+    pub fn ensure_supported(self) -> Result<()> {
+        match self {
+            Frontend::Rocq => Ok(()),
+            Frontend::Lean => anyhow::bail!(
+                "the `lean` frontend is not implemented yet\n  = {}\n  = {}",
+                "only `rocq` is. Lean needs its own interface file and compile \
+                 driver, and three representation questions settled first: how \
+                 `UInt64` erases, what order erasure gives constructors, and \
+                 what `peregrine wasm` emits",
+                "see TODO.md#frontends",
+            ),
+        }
+    }
 }
 
 /// How the adapter reports a failure.

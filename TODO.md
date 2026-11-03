@@ -441,9 +441,12 @@ Three things to verify rather than assume:
 
 Peregrine's Lean frontend supports no string literals, floats or arrays, which
 overlaps the gate's own gaps — a Lean world is the intersection of two subsets,
-so the gate would need to know which frontend it gates for. No
-`component.toml` key selects a frontend, and none should until there is a
-second one.
+so the gate would need to know which frontend it gates for.
+
+The selector exists already: `frontend = "rocq" | "lean"` in `component.toml`,
+`--frontend` on the CLI, Rocq by default. `lean` is *rejected* with a pointer
+here rather than quietly treated as `rocq`, which would mean handing Rocq
+artefacts to someone who asked for Lean.
 
 ### <a id="signed-integers"></a>Signed integers — `E-SIGNED`
 

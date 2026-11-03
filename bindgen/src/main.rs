@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
-use rocq_component_bindgen::{config, config::Oom, support};
+use rocq_component_bindgen::{config, config::Frontend, config::Oom, support};
 use wit_parser::Resolve;
 
 #[derive(Parser)]
@@ -47,6 +47,27 @@ struct Input {
     /// then required to have, or by trapping. Overrides the config.
     #[arg(long, value_enum)]
     oom: Option<OomArg>,
+    /// Which proof assistant the implementation is written in. Overrides the
+    /// config. Only `rocq` is implemented; see TODO.md#frontends.
+    #[arg(long, value_enum)]
+    frontend: Option<FrontendArg>,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum FrontendArg {
+    /// A Rocq `Module Type`, compiled by `CertiRocq Compile Wasm`.
+    Rocq,
+    /// Not implemented yet.
+    Lean,
+}
+
+impl From<FrontendArg> for Frontend {
+    fn from(arg: FrontendArg) -> Self {
+        match arg {
+            FrontendArg::Rocq => Frontend::Rocq,
+            FrontendArg::Lean => Frontend::Lean,
+        }
+    }
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -81,6 +102,7 @@ fn run() -> Result<ExitCode> {
     match &cli.cmd {
         Cmd::Check(input) => {
             let (resolve, world, cfg) = resolve_world(input)?;
+            frontend_of(input, cfg.as_ref()).ensure_supported()?;
             let report = support::check_world(&resolve, world, oom_of(input, cfg.as_ref()));
 
             for warning in &report.warnings {
@@ -115,6 +137,7 @@ fn run() -> Result<ExitCode> {
         }
         Cmd::Generate(input) => {
             let (resolve, world, cfg) = resolve_world(input)?;
+            frontend_of(input, cfg.as_ref()).ensure_supported()?;
             let report = support::check_world(&resolve, world, oom_of(input, cfg.as_ref()));
             // Warnings describe narrowings the generated adapter has to guard
             // at runtime, so they are never suppressed on the way to output.
@@ -136,6 +159,14 @@ fn run() -> Result<ExitCode> {
             bail!("generation is not implemented yet (phase 1); `check` is")
         }
     }
+}
+
+/// The flag wins over the config, which wins over the default.
+fn frontend_of(input: &Input, cfg: Option<&config::Config>) -> Frontend {
+    input
+        .frontend
+        .map(Frontend::from)
+        .unwrap_or_else(|| cfg.map(|c| c.frontend).unwrap_or_default())
 }
 
 /// The flag wins over the config, which wins over the default.
