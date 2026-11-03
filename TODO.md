@@ -56,10 +56,10 @@ A wrong adapter does not announce itself: it reads the wrong bytes and
   (`E-UNKNOWN`).
 - Every offending position is reported, not just the first, so one run tells you
   the whole story.
-- Anything that *narrows* rather than rejects produces a warning naming the
-  position: `u64` carried by a 63-bit integer, or a result type with nowhere to
-  put an out-of-memory signal (where the adapter will trap). `--deny-warnings`
-  turns those into failures.
+- Anything that *narrows* rather than rejects gets a warning naming the
+  position, and `--deny-warnings` turns those into failures. Nothing warns
+  today: the one narrowing, `u64` carried by a 63-bit integer, is reported as a
+  failure mode through the error channel instead, which is strictly louder.
 - A construct that cannot be represented is rejected even when it is only
   declared and never used by an export, because it still shows up in the
   component's type. A world-level `resource` is the case that matters.
@@ -110,9 +110,12 @@ the rejection, so the shortfall is visible rather than inferred.
 
 The error type is matched **by package, interface and type name**, not by its
 cases, so a look-alike enum of your own is rejected (`E-ERROR-TYPE`) instead of
-being populated with cases that happen to line up. `--oom=trap` opts out
-entirely: a bare return type is then accepted and every failure traps, which
-takes the whole instance down but is at least loud.
+being populated with cases that happen to line up.
+
+**There is no opt-out.** A trapping export takes the whole instance down and
+tells its caller nothing it can act on, which is not a contract worth
+generating; and a `--oom=trap` mode would have been a second adapter shape to
+write, test and keep conforming for no gain.
 
 The enum never appears on the Rocq side. `func(x: u64) -> result<u64, error>`
 asks you for `plus1 : int -> int` — a Rocq function cannot run out of memory in
@@ -188,6 +191,7 @@ whole pipeline — `rocq c`, patch the table, `wasm-merge`, `component embed`,
 | `fun n => n` at `u64`, with 0 and 2⁶³−1 | the boxed primitive int, and the range guard |
 | a function returning `None`, and one returning `Some` | `option`'s per-class ordinals |
 | a deliberately allocating function | the out-of-memory channel actually firing |
+| one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged |
 | two and three exports | `MkExports` field offsets (phase 2) |
 | `f64` round-trip | the boxed float, once `wasm-prim-floats` lands (phase 4) |
 
@@ -207,6 +211,44 @@ native JVM GC integration), but retargeting the backend to WasmGC structs would
 invalidate every constant in `repr.rs` and the adapter built on them — and the
 canonical ABI is linear-memory based anyway, so components and WasmGC do not yet
 compose. Not a near-term option, but the reason `repr.rs` is one file.
+
+---
+
+## <a id="heap-reset"></a>Resetting the heap between calls
+
+The allocator only bumps `glob_mem_ptr`; nothing frees. So every call leaks
+everything it allocated, and a component is good for a bounded number of calls
+before `out-of-memory` is all it returns. For `plus1` that bound is large; for
+[lists](#lists) and [strings](#strings) it is small.
+
+**The adapter should snapshot `glob_mem_ptr` once, immediately after
+`main_function` returns, and restore it before every call.** What
+`main_function` built — the export closures and their environments — sits below
+the snapshot; what a call allocates sits above it and is dead once the result
+has been lowered into the canonical ABI. Peak memory becomes the snapshot plus
+the largest single call, rather than the sum of all calls.
+
+Why that should be sound: the region below the snapshot is **write-once**. The
+generated code only ever writes cells it has just allocated, so if
+`main_function` returns at `mem_ptr = S`, every later store is at ≥ S and
+`[0, S)` is frozen. Re-entrancy would break it and cannot happen — no
+[imports](#imports) means nothing can call back in mid-call. Both are claims to
+pin in layer 2 of [representation conformance](#representation), not to assume.
+
+Three things to settle:
+
+- **Where the snapshot lives.** An adapter global, written by whatever calls
+  `main_function` — which must happen exactly once, so either a `start`
+  function or an initialised flag. Undecided.
+- **When the reset fires.** Lowered lists and strings live in our memory and the
+  caller reads them after the call returns, so the reset belongs on entry to the
+  *next* call, or in `post-return` — never between producing a result and
+  handing it over. `post-return` is a [legal no-op](#lists) today because
+  nothing is freed; a reset gives it a job.
+- **Recovering from out-of-memory.** A failed call leaves garbage above the
+  snapshot and `glob_out_of_mem` set. Resetting and clearing the flag would
+  make `out-of-memory` a per-call failure instead of a poisoned instance —
+  worth having, and it rests on the same frozen-region claim.
 
 ---
 
@@ -357,7 +399,8 @@ Two caveats that do not go away:
 
 - **No GC.** A list of *n* elements costs *n* cons cells plus the
   canonical-ABI array, all leaked until `max_mem_pages`. Fine one-shot; a
-  repeatedly-invoked list export will hit the ceiling.
+  repeatedly-invoked list export will hit the ceiling unless the
+  [heap reset](#heap-reset) lands first.
 - **The memory binding.** `canon lift` has to be bound to the merged module's
   single memory or list reads silently hit the wrong one. This is what makes
   the `--enable-multimemory` flag in `testing/examples/component/plus1/Makefile`
@@ -413,9 +456,9 @@ and `wasm-merge`.
 Almost nothing in the generator is about Rocq, which is what makes this cheap:
 only `Iface.v` (a Lean signature in place of a `Module Type`) and `extraction.v`
 (a `peregrine wasm prog.ast` invocation rather than `CertiRocq Compile Wasm`).
-The adapter, the build rules and the gate are all shared. That is a frontend
-seam with three members: render a type, render the interface file, drive
-compilation.
+The adapter, the build rules and the gate are all shared. Three operations
+differ per frontend — render a type, render the interface file, drive
+compilation — so that is the interface a second one has to implement.
 
 λ□ is untyped — erasure replaces types and proofs with `tBox`, leaving only the
 inductive declarations, which is just what `repr.rs`'s ordinal assignment reads.

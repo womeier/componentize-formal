@@ -29,8 +29,6 @@ pub struct Config {
     pub wasm: WasmConfig,
     #[serde(default)]
     pub certirocq: CertiRocqConfig,
-    #[serde(default)]
-    pub abi: AbiConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,13 +57,6 @@ pub struct CertiRocqConfig {
     /// closure.
     #[serde(default)]
     pub show_ir: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "kebab-case")]
-pub struct AbiConfig {
-    #[serde(default)]
-    pub oom: Oom,
 }
 
 /// Which proof assistant the implementation is written in.
@@ -108,19 +99,6 @@ impl Frontend {
             ),
         }
     }
-}
-
-/// How the adapter reports a failure.
-#[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Oom {
-    /// Through the error channel, which every export is then required to
-    /// have: `result<T, certirocq:abi/errors.error>`.
-    #[default]
-    Report,
-    /// Trap instead, which lets an export return a bare type at the cost of
-    /// taking the whole instance down on a failure.
-    Trap,
 }
 
 impl Default for ImplConfig {

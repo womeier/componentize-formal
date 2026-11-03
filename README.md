@@ -4,7 +4,8 @@
 
 Turn a WIT world into a Wasm component whose implementation you write in a
 proof assistant, compiled by CertiRocq's verified Wasm backend. Rocq today;
-the frontend is a [seam](TODO.md#frontends), not a baked-in assumption.
+which proof assistant it is affects only two generated files, so
+[Lean fits](TODO.md#frontends) without disturbing the rest.
 
 The *formal* in the name is about where the code comes from, not a claim that
 the component is verified end to end: the backend's compilation is proved
@@ -32,7 +33,7 @@ error[E-NO-CHANNEL]: a result type with no error channel is not supported
   --> export plus1: result
   = cannot be compiled: every export must return result<T, error> with
     certirocq:abi/errors.error, because this call can fail with: out of memory,
-    out of range (`val` >= 2^63). Pass --oom=trap to trap instead.
+    out of range (`val` >= 2^63)
   = see TODO.md#failure-channel
 ```
 
@@ -56,9 +57,9 @@ world wrapper-world {
 
 `option<u64>` is not enough — `plus1` can fail two ways, out of memory and a
 `val` of 2⁶³ or more, and `none` cannot say which. The enum never reaches the
-Rocq side: that signature asks you for `plus1 : int -> int`. `--oom=trap` opts
-out, accepting a bare return type and trapping instead. Details in
-[`TODO.md#failure-channel`](TODO.md#failure-channel).
+Rocq side: that signature asks you for `plus1 : int -> int`. There is no opt-out
+— a component that traps instead of answering is not a component anyone can
+use. Details in [`TODO.md#failure-channel`](TODO.md#failure-channel).
 
 ## What works
 

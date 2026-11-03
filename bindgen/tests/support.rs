@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use componentize_formal::{config::Oom, resolve_world, support};
+use componentize_formal::{resolve_world, support};
 
 fn fixture(kind: &str, name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -19,13 +19,9 @@ fn fixture(kind: &str, name: &str) -> PathBuf {
 }
 
 fn report(path: &Path) -> support::Report {
-    report_with(path, Oom::Report)
-}
-
-fn report_with(path: &Path, oom: Oom) -> support::Report {
     let (resolve, world) =
         resolve_world(path, None).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
-    support::check_world(&resolve, world, oom)
+    support::check_world(&resolve, world)
 }
 
 fn codes(path: &Path) -> BTreeSet<String> {
@@ -232,21 +228,6 @@ fn names_the_failure_modes() {
     let note = &report.rejections[0].note;
     assert!(note.contains("out of memory"), "{note}");
     assert!(note.contains("`val` >= 2^63"), "{note}");
-}
-
-/// Under `--oom=trap` a bare result type is accepted, and every failure mode
-/// that will now trap is named.
-#[test]
-fn trapping_accepts_a_bare_result_type() {
-    let report = report_with(&fixture("bad", "no-channel.wit"), Oom::Trap);
-    assert!(
-        report.is_ok(),
-        "{:?}",
-        report.rejections.iter().map(|r| r.code).collect::<Vec<_>>()
-    );
-    assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
-    assert!(report.warnings.iter().any(|w| w.contains("out of memory")));
-    assert!(report.warnings.iter().any(|w| w.contains("2^63")));
 }
 
 /// The shipped package resolves without the world vendoring a deps/ tree.

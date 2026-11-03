@@ -29,8 +29,6 @@ use wit_parser::{
     Function, FunctionKind, Resolve, Type, TypeDefKind, TypeId, TypeOwner, WorldItem,
 };
 
-use crate::config::Oom;
-
 /// Why we are turning a world away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
@@ -136,7 +134,7 @@ enum Pos {
     Result,
 }
 
-pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId, oom: Oom) -> Report {
+pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
     let mut rep = Report::default();
     let w = &resolve.worlds[world];
 
@@ -193,7 +191,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId, oom: Oom) -> R
         match item {
             WorldItem::Function(f) => {
                 exported_funcs += 1;
-                check_function(resolve, f, &name, oom, &mut rep);
+                check_function(resolve, f, &name, &mut rep);
             }
             WorldItem::Interface { .. } => rep.reject(
                 "E-EXPORT-INTERFACE",
@@ -258,7 +256,7 @@ fn check_world_type(resolve: &Resolve, id: TypeId, site: &str, rep: &mut Report)
     }
 }
 
-fn check_function(resolve: &Resolve, f: &Function, name: &str, oom: Oom, rep: &mut Report) {
+fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report) {
     match f.kind {
         FunctionKind::Freestanding => {}
         FunctionKind::AsyncFreestanding => rep.reject(
@@ -354,45 +352,36 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, oom: Oom, rep: &m
                 }
                 None => walk(resolve, result, Pos::Result, true, &site, rep),
             }
-            if oom == Oom::Trap {
-                for failure in &failures {
-                    rep.warnings.push(format!(
-                        "export {name}: {failure} will trap, because the result type carries \
-                         no error channel"
-                    ));
-                }
-            } else {
-                let listed = failures
-                    .iter()
-                    .map(|f| f.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                match other {
-                    Channel::WrongError(shown) => rep.reject(
-                        "E-ERROR-TYPE",
-                        format!("result<_, {shown}>"),
-                        format!("export {name}: result"),
-                        Reason::Malformed,
-                        "failure-channel",
-                        format!(
-                            "the error half must be certirocq:abi/errors.error, which is the \
-                             only type the adapter knows how to populate; this call can fail \
-                             with: {listed}"
-                        ),
+            let listed = failures
+                .iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            match other {
+                Channel::WrongError(shown) => rep.reject(
+                    "E-ERROR-TYPE",
+                    format!("result<_, {shown}>"),
+                    format!("export {name}: result"),
+                    Reason::Malformed,
+                    "failure-channel",
+                    format!(
+                        "the error half must be certirocq:abi/errors.error, which is the \
+                         only type the adapter knows how to populate; this call can fail \
+                         with: {listed}"
                     ),
-                    _ => rep.reject(
-                        "E-NO-CHANNEL",
-                        "a result type with no error channel",
-                        format!("export {name}: result"),
-                        Reason::Malformed,
-                        "failure-channel",
-                        format!(
-                            "every export must return result<T, error> with \
-                             certirocq:abi/errors.error, because this call can fail with: \
-                             {listed}. Pass --oom=trap to trap instead."
-                        ),
+                ),
+                _ => rep.reject(
+                    "E-NO-CHANNEL",
+                    "a result type with no error channel",
+                    format!("export {name}: result"),
+                    Reason::Malformed,
+                    "failure-channel",
+                    format!(
+                        "every export must return result<T, error> with \
+                         certirocq:abi/errors.error, because this call can fail with: \
+                         {listed}"
                     ),
-                }
+                ),
             }
         }
     }
