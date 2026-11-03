@@ -1,5 +1,7 @@
 package local:bad;
+
 world w {
+  use certirocq:abi/errors.{error};
   resource counter { bump: func() -> u64; }
-  export make: func(seed: u64) -> option<u64>;
+  export make: func(seed: u64) -> result<u64, error>;
 }

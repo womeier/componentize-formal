@@ -1,2 +1,6 @@
 package local:bad;
-world w { export total: func(xs: list<u64>) -> option<u64>; }
+
+world w {
+  use certirocq:abi/errors.{error};
+  export total: func(xs: list<u64>) -> result<u64, error>;
+}

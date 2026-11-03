@@ -1,2 +1,6 @@
 package local:bad;
-world w { export emit: func(x: u64); }
+
+world w {
+  use certirocq:abi/errors.{error};
+  export emit: func(x: u64);
+}

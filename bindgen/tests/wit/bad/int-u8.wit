@@ -1,2 +1,6 @@
 package local:bad;
-world w { export narrow: func(x: u8) -> option<u8>; }
+
+world w {
+  use certirocq:abi/errors.{error};
+  export narrow: func(x: u8) -> result<u8, error>;
+}

@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use rocq_component_bindgen::{resolve_world, support};
+use rocq_component_bindgen::{config::Oom, resolve_world, support};
 
 fn fixture(kind: &str, name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -19,9 +19,13 @@ fn fixture(kind: &str, name: &str) -> PathBuf {
 }
 
 fn report(path: &Path) -> support::Report {
+    report_with(path, Oom::Report)
+}
+
+fn report_with(path: &Path, oom: Oom) -> support::Report {
     let (resolve, world) =
         resolve_world(path, None).unwrap_or_else(|e| panic!("{}: {e:#}", path.display()));
-    support::check_world(&resolve, world)
+    support::check_world(&resolve, world, oom)
 }
 
 fn codes(path: &Path) -> BTreeSet<String> {
@@ -136,31 +140,36 @@ fn reports_every_offending_position() {
         .any(|(what, site)| what == "f32" && site.contains("result")));
 }
 
-/// A result type with nowhere to put an out-of-memory signal is accepted, but
-/// never quietly: the adapter will trap, and the user is told so.
+/// u64 is carried by a 63-bit integer, so lowering one can overflow. That is
+/// accounted for as a failure mode of the parameter -- not of the result,
+/// where lifting a 63-bit int into a u64 is always exact -- and reported
+/// through the error channel rather than as a warning.
 #[test]
-fn warns_when_there_is_no_oom_channel() {
-    let report = report(&fixture("good", "no-oom-channel.wit"));
-    assert!(report.is_ok());
-    assert!(
-        report.warnings.iter().any(|w| w.contains("out-of-memory")),
-        "expected an OOM warning, got {:?}",
-        report.warnings
-    );
-}
+fn a_u64_parameter_is_a_failure_mode() {
+    use rocq_component_bindgen::resolve_world;
+    use wit_parser::WorldItem;
 
-/// u64 is carried by a 63-bit integer. That narrowing must be announced.
-#[test]
-fn warns_about_the_u64_range() {
-    let report = report(&fixture("good", "scalars.wit"));
-    assert!(report.is_ok());
+    let path = fixture("good", "scalars.wit");
+    let (resolve, world) = resolve_world(&path, None).unwrap();
+
+    let f = resolve.worlds[world]
+        .exports
+        .values()
+        .find_map(|item| match item {
+            WorldItem::Function(f) => Some(f),
+            _ => None,
+        })
+        .expect("one exported function");
+
     assert_eq!(
-        report.warnings.len(),
-        2,
-        "expected the parameter and the result to be flagged: {:?}",
-        report.warnings
+        support::failure_modes(&resolve, f),
+        vec![
+            support::Failure::OutOfMemory,
+            support::Failure::OutOfRange("`val` >= 2^63".into()),
+        ]
     );
-    assert!(report.warnings.iter().all(|w| w.contains("2^63")));
+    // A clean world with a proper channel produces no warnings at all.
+    assert!(report(&path).warnings.is_empty());
 }
 
 /// A code cannot be added without documenting it.
@@ -188,4 +197,62 @@ fn every_rejection_points_at_a_todo_section() {
         }
     }
     assert!(checked > 10, "only {checked} rejections exercised");
+}
+
+/// Every export must be able to report every way it can fail. The ways a
+/// result type fails to do that are reported separately, because the fix
+/// differs.
+#[test]
+fn requires_an_error_channel() {
+    expect_bad("no-channel.wit", &["E-NO-CHANNEL"]);
+    expect_bad("option-channel.wit", &["E-NO-CHANNEL"]);
+    expect_bad("no-error-half.wit", &["E-NO-CHANNEL"]);
+    expect_bad("error-type.wit", &["E-ERROR-TYPE"]);
+}
+
+/// A look-alike enum of the user's own is not the shipped error type, however
+/// well its cases would line up.
+#[test]
+fn the_error_type_is_matched_by_identity() {
+    let report = report(&fixture("bad", "error-type.wit"));
+    let rejection = &report.rejections[0];
+    assert_eq!(rejection.code, "E-ERROR-TYPE");
+    assert!(
+        rejection.note.contains("certirocq:abi/errors.error"),
+        "{}",
+        rejection.note
+    );
+}
+
+/// The failure modes a signature can produce are named, so the shortfall is
+/// visible rather than left to be inferred.
+#[test]
+fn names_the_failure_modes() {
+    let report = report(&fixture("bad", "option-channel.wit"));
+    let note = &report.rejections[0].note;
+    assert!(note.contains("out of memory"), "{note}");
+    assert!(note.contains("`val` >= 2^63"), "{note}");
+}
+
+/// Under `--oom=trap` a bare result type is accepted, and every failure mode
+/// that will now trap is named.
+#[test]
+fn trapping_accepts_a_bare_result_type() {
+    let report = report_with(&fixture("bad", "no-channel.wit"), Oom::Trap);
+    assert!(
+        report.is_ok(),
+        "{:?}",
+        report.rejections.iter().map(|r| r.code).collect::<Vec<_>>()
+    );
+    assert_eq!(report.warnings.len(), 2, "{:?}", report.warnings);
+    assert!(report.warnings.iter().any(|w| w.contains("out of memory")));
+    assert!(report.warnings.iter().any(|w| w.contains("2^63")));
+}
+
+/// The shipped package resolves without the world vendoring a deps/ tree.
+#[test]
+fn the_shipped_abi_package_is_available() {
+    assert!(rocq_component_bindgen::ABI_WIT.contains("package certirocq:abi;"));
+    // good/scalars.wit `use`s it; resolving at all proves it is reachable.
+    assert!(report(&fixture("good", "scalars.wit")).is_ok());
 }

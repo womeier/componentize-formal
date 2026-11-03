@@ -1,5 +1,7 @@
 package local:bad;
+
 world w {
+  use certirocq:abi/errors.{error};
   flags perms { read, write }
-  export check: func(p: perms) -> option<bool>;
+  export check: func(p: perms) -> result<bool, error>;
 }

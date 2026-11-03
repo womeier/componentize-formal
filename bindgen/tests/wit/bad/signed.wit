@@ -1,2 +1,6 @@
 package local:bad;
-world w { export neg: func(x: s32) -> option<u64>; }
+
+world w {
+  use certirocq:abi/errors.{error};
+  export neg: func(x: s32) -> result<u64, error>;
+}

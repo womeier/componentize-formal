@@ -1,5 +1,7 @@
 package local:bad;
+
 world w {
+  use certirocq:abi/errors.{error};
   record point { x: u64, y: u64 }
-  export norm: func(p: point) -> option<u64>;
+  export norm: func(p: point) -> result<u64, error>;
 }

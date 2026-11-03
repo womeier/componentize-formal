@@ -65,15 +65,17 @@ pub struct AbiConfig {
     pub oom: Oom,
 }
 
-/// What the adapter does when `glob_out_of_mem` is set after a call.
+/// How the adapter reports a failure.
 #[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Oom {
-    /// `none`/`err` if the result type allows it, trap otherwise.
+    /// Through the error channel, which every export is then required to
+    /// have: `result<T, certirocq:abi/errors.error>`.
     #[default]
-    Auto,
+    Report,
+    /// Trap instead, which lets an export return a bare type at the cost of
+    /// taking the whole instance down on a failure.
     Trap,
-    None,
 }
 
 impl Default for ImplConfig {

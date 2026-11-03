@@ -1,2 +1,2 @@
-package local:warn;
+package local:bad;
 world w { export plus1: func(val: u64) -> u64; }

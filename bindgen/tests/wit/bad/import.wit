@@ -1,5 +1,7 @@
 package local:bad;
+
 world w {
+  use certirocq:abi/errors.{error};
   import log: func(level: u64);
-  export plus1: func(val: u64) -> option<u64>;
+  export plus1: func(val: u64) -> result<u64, error>;
 }

@@ -10,3 +10,6 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 wit-parser = "0.254"
+
+[dev-dependencies]
+wit-parser = "0.254"

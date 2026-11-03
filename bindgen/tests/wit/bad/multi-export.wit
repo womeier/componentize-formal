@@ -1,5 +1,7 @@
 package local:bad;
+
 world w {
-  export plus1: func(val: u64) -> option<u64>;
-  export negb: func(val: bool) -> option<bool>;
+  use certirocq:abi/errors.{error};
+  export plus1: func(val: u64) -> result<u64, error>;
+  export negb: func(val: bool) -> result<bool, error>;
 }

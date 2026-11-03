@@ -1,5 +1,6 @@
 package local:ok;
 world w {
+  use certirocq:abi/errors.{error};
   enum colour { red, green, blue }
-  export next: func(c: colour) -> option<colour>;
+  export next: func(c: colour) -> result<colour, error>;
 }

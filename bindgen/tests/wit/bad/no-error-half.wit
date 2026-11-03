@@ -1,0 +1,2 @@
+package local:bad;
+world w { export plus1: func(val: u64) -> result<u64>; }

@@ -13,25 +13,46 @@ Given `world.wit`, the generator will emit
 - build rules that run `wasm-merge`, then `wasm-tools component embed` and
   `component new`.
 
-Today only the support gate is implemented:
+Today only the support gate is implemented. It decides whether a world is
+within the subset the backend can honour and reports precisely what it cannot,
+pointing at the matching section of [`TODO.md`](TODO.md):
 
 ```
 $ nix develop
-$ cd bindgen && cargo run -- check --wit ../../testing/examples/component/plus1/world.wit
-warning: export plus1: param `val`: u64 is carried by Uint63.int, so values >= 2^63 ...
-ok: world `wrapper-world` is within the supported subset
+$ cd bindgen && cargo run -- check --wit world.wit
+error[E-NO-CHANNEL]: a result type with no error channel is not supported
+  --> export plus1: result
+  = cannot be compiled: every export must return result<T, error> with
+    certirocq:abi/errors.error, because this call can fail with: out of memory,
+    out of range (`val` >= 2^63). Pass --oom=trap to trap instead.
+  = see TODO.md#failure-channel
 ```
 
-It decides whether a world is within the subset the backend can honour and
-reports precisely what it cannot, pointing at the matching section of
-[`TODO.md`](TODO.md). Correctness is the point — see
-[no silent failure](TODO.md#no-silent-failure).
+Correctness is the point — see [no silent failure](TODO.md#no-silent-failure).
+
+## Every export returns `result<T, error>`
+
+Every call can fail: `main_function` runs the whole program and the adapter
+allocates the area it returns through. So a world declares the error type this
+repo ships, and the gate rejects a return type that cannot report the failures
+the signature can produce:
+
+```wit
+package local:demo;
+
+world wrapper-world {
+  use certirocq:abi/errors.{error};
+  export plus1: func(val: u64) -> result<u64, error>;
+}
+```
+
+`option<u64>` is not enough — `plus1` can fail two ways, out of memory and a
+`val` of 2⁶³ or more, and `none` cannot say which. The enum never reaches the
+Rocq side: that signature asks you for `plus1 : int -> int`. `--oom=trap` opts
+out, accepting a bare return type and trapping instead. Details in
+[`TODO.md#failure-channel`](TODO.md#failure-channel).
 
 ## What works
-
-The generator itself is still being built. Only the support gate is
-implemented — it decides whether a world is within the subset the backend can
-honour and reports precisely what it cannot.
 
 | | Status |
 | --- | --- |
@@ -51,9 +72,9 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `u64` | **supported** | Rocq's primitive 63-bit ints (`Uint63.int`); values ≥ 2⁶³ don't fit — warned at the position, guarded in the adapter |
 | `u8`, `u16`, `u32` | [wanted, unscheduled](TODO.md#integer-widths) | a narrower width needs a range check on every lift |
 | `enum` | **supported** | all-nullary inductive, `2*ord+1` |
-| `option<T>`, `result<T, E>` as the result | **supported** | doubles as the out-of-memory channel |
+| `result<T, error>` as the result | **required** | the [failure channel](TODO.md#failure-channel), on every export |
 | type aliases | **supported** | looked through |
-| `option`/`result` as a parameter, or nested | planned (phase 2) | fixed shapes, known ordinals — no layout algorithm needed |
+| `option`/`result` as a value | planned (phase 2) | fixed shapes, known ordinals — no layout algorithm needed |
 | `record`, `tuple` | planned (phase 3) | needs split ordinal mapping + canonical-ABI layout |
 | `variant` | planned (phase 3) | same machinery |
 | `s8`, `s16`, `s32`, `s64` | [wanted, unscheduled](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
@@ -70,7 +91,8 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| one `export name: func(x: T) -> U` | **supported** | the shape `plus1` and `negb` already use |
+| one `export name: func(x: T) -> result<U, error>` | **supported** | one argument, one result, one error channel |
+| `use` of a type-only interface | **supported** | needs no core import, so it costs nothing |
 | several parameters | planned (phase 2) | iterated closure application |
 | no parameters, or no result | planned (phase 2) | different adapter prologue |
 | several exports | planned (phase 2) | one compiled `MkExports` term carrying every closure |
@@ -85,6 +107,7 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/`](bindgen) | the generator, Rust, on `wit-parser` |
 | [`bindgen/src/support.rs`](bindgen/src/support.rs) | the support gate |
 | [`bindgen/src/repr.rs`](bindgen/src/repr.rs) | CertiRocq's value representation, with sources |
+| [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 

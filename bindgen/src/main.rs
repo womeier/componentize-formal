@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
-use rocq_component_bindgen::{config, support};
+use rocq_component_bindgen::{config, config::Oom, support};
 use wit_parser::Resolve;
 
 #[derive(Parser)]
@@ -43,6 +43,27 @@ struct Input {
     /// guard at runtime, so a build that wants no surprises should set this.
     #[arg(long)]
     deny_warnings: bool,
+    /// How a failure is reported: through the error channel every export is
+    /// then required to have, or by trapping. Overrides the config.
+    #[arg(long, value_enum)]
+    oom: Option<OomArg>,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum OomArg {
+    /// Require result<T, certirocq:abi/errors.error> on every export.
+    Report,
+    /// Trap on failure, allowing a bare result type.
+    Trap,
+}
+
+impl From<OomArg> for Oom {
+    fn from(arg: OomArg) -> Self {
+        match arg {
+            OomArg::Report => Oom::Report,
+            OomArg::Trap => Oom::Trap,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -59,8 +80,8 @@ fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
     match &cli.cmd {
         Cmd::Check(input) => {
-            let (resolve, world, _) = resolve_world(input)?;
-            let report = support::check_world(&resolve, world);
+            let (resolve, world, cfg) = resolve_world(input)?;
+            let report = support::check_world(&resolve, world, oom_of(input, cfg.as_ref()));
 
             for warning in &report.warnings {
                 eprintln!("warning: {warning}");
@@ -93,8 +114,8 @@ fn run() -> Result<ExitCode> {
             }
         }
         Cmd::Generate(input) => {
-            let (resolve, world, _cfg) = resolve_world(input)?;
-            let report = support::check_world(&resolve, world);
+            let (resolve, world, cfg) = resolve_world(input)?;
+            let report = support::check_world(&resolve, world, oom_of(input, cfg.as_ref()));
             // Warnings describe narrowings the generated adapter has to guard
             // at runtime, so they are never suppressed on the way to output.
             for warning in &report.warnings {
@@ -115,6 +136,14 @@ fn run() -> Result<ExitCode> {
             bail!("generation is not implemented yet (phase 1); `check` is")
         }
     }
+}
+
+/// The flag wins over the config, which wins over the default.
+fn oom_of(input: &Input, cfg: Option<&config::Config>) -> Oom {
+    input
+        .oom
+        .map(Oom::from)
+        .unwrap_or_else(|| cfg.map(|c| c.abi.oom).unwrap_or_default())
 }
 
 fn resolve_world(input: &Input) -> Result<(Resolve, wit_parser::WorldId, Option<config::Config>)> {

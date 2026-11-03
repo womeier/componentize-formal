@@ -39,6 +39,7 @@ section.
 | `E-RESOURCE` | `resource`, `own`, `borrow`, methods | [out of scope](#resources) |
 | `E-ASYNC` | `async func`, `future`, `stream`, `error-context` | [out of scope](#async) |
 | `E-IMPORT` | imported functions and interfaces | [wanted, not scheduled](#imports) |
+| `E-NO-CHANNEL`, `E-ERROR-TYPE` | an export that cannot report its failures | [required](#failure-channel) |
 | `E-NO-EXPORT` | a world with nothing to export | [rejected outright](#nothing-to-compile) |
 | `E-UNKNOWN` | a world that did not resolve | [rejected outright](#unresolved) |
 | `E-EXPORT-INTERFACE` | `export some:pkg/iface` | [out of scope](#exported-interfaces) |
@@ -61,9 +62,87 @@ A wrong adapter does not announce itself: it reads the wrong bytes and
 - A construct that cannot be represented is rejected even when it is only
   declared and never used by an export, because it still shows up in the
   component's type. A world-level `resource` is the case that matters.
-- Out-of-memory is never swallowed. `glob_out_of_mem` is checked after every
-  call, and reported through `none`/`err` where the result type allows it and a
-  trap where it does not.
+- Out-of-memory is never swallowed, and neither is anything else: every export
+  must be able to report every way it can fail. See
+  [the failure channel](#failure-channel).
+
+## <a id="failure-channel"></a>The failure channel — `E-NO-CHANNEL`, `E-ERROR-TYPE`
+
+Every export must return `result<T, error>` with the `error` enum from the
+[`certirocq:abi`](bindgen/wit/certirocq-abi.wit) package this repo ships:
+
+```wit
+world wrapper-world {
+  use certirocq:abi/errors.{error};
+  export plus1: func(val: u64) -> result<u64, error>;
+}
+```
+
+**Every call can fail**, so a bare return type is an incomplete contract rather
+than a terse one. `main_function` runs the whole program and the adapter
+allocates the area it returns through, which is why the backend checks
+`glob_out_of_mem` after every call it makes (`LambdaANF_to_Wasm.v:373-382`) and
+the adapter has to check it after the one it makes.
+
+`option<T>` is **not** enough, and `plus1` is the example: it can fail two
+ways, and `none` cannot say which.
+
+| Failure | Detected |
+| --- | --- |
+| `out-of-memory` | after the call, from `glob_out_of_mem` |
+| `out-of-range` | *before* the call — a `u64` argument of 2^63 or more has no `Uint63.int` |
+
+The gate computes the failure modes a signature can produce and names them in
+the rejection, so the shortfall is visible rather than inferred.
+
+The error type is matched **by package, interface and type name**, not by its
+cases, so a look-alike enum of your own is rejected (`E-ERROR-TYPE`) instead of
+being populated with cases that happen to line up. `--oom=trap` opts out
+entirely: a bare return type is then accepted and every failure traps, which
+takes the whole instance down but is at least loud.
+
+The enum never appears on the Rocq side. `func(x: u64) -> result<u64, error>`
+asks you for `plus1 : int -> int` — a Rocq function cannot run out of memory in
+its own type, and nothing in Rocq knows a value has to fit a WIT width.
+
+### <a id="refinement-types"></a>Idea: refinement types for the narrow widths
+
+Worth exploring, not scheduled. The reason `u8`/`u16`/`u32` are
+[rejected](#integer-widths) is that lifting needs a range check, because nothing
+stops the Rocq side returning a larger `int`. A dependent type moves that
+obligation to compile time:
+
+```coq
+Definition u32 := { x : int | (x <? 2 ^ 32)%uint63 = true }.
+Parameter narrow : int -> u32.   (* generated into Iface.v *)
+```
+
+Then there is no `out-of-range` on the result side at all — it is ruled out
+statically, and the implementer discharges it once instead of the adapter
+checking it on every call.
+
+What makes it work at the Wasm level is that the proof is erased: `exist x pf`
+becomes a boxed constructor whose proof slot is a box, so the **adapter can
+fabricate it** after doing its own check on the way *in*. Nothing has to
+construct a proof at runtime.
+
+Three things to settle before taking it seriously:
+
+1. **The erased arity.** `sig` has two fields and the second is a `Prop`, so
+   the adapter has to know whether the erased constructor is `[ord, x, box]` or
+   whether a pass strips the `Prop` field to `[ord, x]`. This is the
+   "erased arity is not the Rocq arity" problem in its sharpest form, and it
+   must be checked against `CertiRocq Show IR` rather than assumed — a good
+   first case for the [representation suite](#representation).
+2. **The trust boundary moves.** On the way in, the adapter asserts the
+   refinement by writing a box where the proof goes. A bug in its range check
+   then hands Rocq a value violating Rocq's own invariant. That is not worse in
+   kind than the rest of the trusted glue, but it is worth naming.
+3. **Ergonomics.** Every implementation owes a proof per result. Fine for
+   `fun n => n mod 2 ^ 32`; a real burden in general. It would want to be
+   opt-in — `abi.narrow = "checked" | "refined"` — rather than the default.
+
+---
 
 ## <a id="representation"></a>Representation conformance
 
@@ -151,13 +230,15 @@ get its closure and proceeds as the one-export case does. A Rocq tuple would
 walk instead of a flat index. `n = 1` skips the wrapper, keeping the generated
 adapter comparable to the hand-written `plus1` one.
 
-### <a id="option-result"></a>`option` and `result` elsewhere — `E-OPTION`, phase 2
+### <a id="option-result"></a>`option` and `result` as values — `E-OPTION`, phase 2
 
-Both are already supported as the result type, which is where they carry the
-out-of-memory signal. As a *parameter*, or nested inside another type, they
-still need lowering into the heap — but that is much cheaper than the general
-[structured-type](#structured-types) work, because their shapes are fixed and
-their ordinals are known rather than derived:
+The outermost `result<T, error>` of an export is [the failure
+channel](#failure-channel) and is handled. An `option` or `result` anywhere
+else is an ordinary value and needs lowering into, or lifting out of, the heap.
+
+That is much cheaper than the general [structured-type](#structured-types)
+work, because their shapes are fixed and their ordinals are known rather than
+derived:
 
 | | CertiRocq | WIT |
 | --- | --- | --- |
