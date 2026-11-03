@@ -247,10 +247,9 @@ const RESOURCE_NOTE: &str = "resources need handle tables and destructors; there
 fn check_world_type(resolve: &Resolve, id: TypeId, site: &str, rep: &mut Report) {
     let def = &resolve.types[id];
     if matches!(def.kind, TypeDefKind::Resource) {
-        let shown = def.name.clone().unwrap_or_else(|| "resource".into());
         rep.reject(
             "E-RESOURCE",
-            format!("resource {shown}"),
+            describe(def),
             site.to_string(),
             Reason::OutOfScope,
             "resources",
@@ -497,12 +496,10 @@ fn resolved(resolve: &Resolve, ty: Type) -> Type {
 
 fn show(resolve: &Resolve, ty: Type) -> String {
     match ty {
-        Type::Id(id) => {
-            let def = &resolve.types[id];
-            def.name
-                .clone()
-                .unwrap_or_else(|| def.kind.as_str().to_string())
-        }
+        Type::Id(id) => resolve.types[id]
+            .name
+            .clone()
+            .unwrap_or_else(|| resolve.types[id].kind.as_str().to_string()),
         other => format!("{other:?}").to_lowercase(),
     }
 }
@@ -585,9 +582,19 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut 
     }
 }
 
+/// How a type reads in a diagnostic: its kind, plus its name when it has one.
+/// An anonymous `list<u64>` is just "list"; a declared record is
+/// "record (point)".
+fn describe(def: &wit_parser::TypeDef) -> String {
+    match &def.name {
+        Some(name) => format!("{} ({name})", def.kind.as_str()),
+        None => def.kind.as_str().to_string(),
+    }
+}
+
 fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: &mut Report) {
     let def = &resolve.types[id];
-    let shown = def.name.clone().unwrap_or_else(|| def.kind.as_str().into());
+    let shown = describe(def);
 
     match &def.kind {
         TypeDefKind::Type(inner) => walk(resolve, *inner, pos, top, site, rep),
@@ -600,7 +607,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
         // option or result at this point is an ordinary structured type.
         TypeDefKind::Option(_) | TypeDefKind::Result(_) => rep.reject(
             "E-OPTION",
-            format!("{} ({shown})", def.kind.as_str()),
+            shown.clone(),
             site.to_string(),
             Reason::Planned(2),
             "option-result",
@@ -610,7 +617,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
 
         TypeDefKind::Record(_) | TypeDefKind::Tuple(_) | TypeDefKind::Variant(_) => rep.reject(
             "E-STRUCTURED",
-            format!("{} ({shown})", def.kind.as_str()),
+            shown.clone(),
             site.to_string(),
             Reason::Planned(3),
             "structured-types",
@@ -620,7 +627,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
 
         TypeDefKind::Flags(_) => rep.reject(
             "E-FLAGS",
-            format!("flags ({shown})"),
+            shown.clone(),
             site.to_string(),
             Reason::OutOfScope,
             "flags",
@@ -630,26 +637,28 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
 
         TypeDefKind::List(_) | TypeDefKind::FixedLengthList(..) => rep.reject(
             "E-LIST",
-            format!("{} ({shown})", def.kind.as_str()),
+            shown.clone(),
             site.to_string(),
-            Reason::OutOfScope,
+            Reason::Later,
             "lists",
-            "needs cabi_realloc and cons-cell walking in both directions, the one part that \
-             requires real canonical-ABI machinery",
+            "wanted: list is the one recursive former the component model has, so it is \
+             expressible -- but it needs cabi_realloc and cons-cell walking in both \
+             directions",
         ),
 
         TypeDefKind::Map(..) => rep.reject(
             "E-MAP",
-            format!("map ({shown})"),
+            shown.clone(),
             site.to_string(),
             Reason::OutOfScope,
-            "lists",
-            "same machinery as lists, plus a key ordering the Rocq side would have to agree on",
+            "maps",
+            "the list machinery plus a key ordering both sides would have to agree on, with \
+             no canonical Rocq map type to agree with",
         ),
 
         TypeDefKind::Resource | TypeDefKind::Handle(_) => rep.reject(
             "E-RESOURCE",
-            format!("{} ({shown})", def.kind.as_str()),
+            shown.clone(),
             site.to_string(),
             Reason::OutOfScope,
             "resources",
@@ -658,7 +667,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
 
         TypeDefKind::Future(_) | TypeDefKind::Stream(_) => rep.reject(
             "E-ASYNC",
-            format!("{} ({shown})", def.kind.as_str()),
+            shown.clone(),
             site.to_string(),
             Reason::OutOfScope,
             "async",
@@ -667,7 +676,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
 
         TypeDefKind::Unknown => rep.reject(
             "E-UNKNOWN",
-            format!("an unresolved type ({shown})"),
+            format!("an unresolved type: {shown}"),
             site.to_string(),
             Reason::Malformed,
             "unresolved",

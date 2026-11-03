@@ -32,7 +32,8 @@ section.
 | `E-SIGNED` | `s8`, `s16`, `s32`, `s64` | [wanted, not scheduled](#signed-integers) |
 | `E-FLOAT` | `f64` | [planned, phase 4](#f64) |
 | `E-FLOAT` | `f32` | [not planned](#f32) |
-| `E-LIST`, `E-MAP` | `list`, fixed-length list, `map` | [out of scope](#lists) |
+| `E-LIST` | `list`, fixed-length list | [wanted, not scheduled](#lists) |
+| `E-MAP` | `map` | [not planned](#maps) |
 | `E-STRING` | `string` | [wanted, not scheduled](#strings) |
 | `E-CHAR` | `char` | [out of scope](#char) |
 | `E-FLAGS` | `flags` | [out of scope](#flags) |
@@ -294,6 +295,56 @@ declared width, so every lift needs a range check and somewhere to report the
 overflow. `u64` needs a guard in one direction only, which is why it came
 first.
 
+### <a id="lists"></a>Lists — `E-LIST`
+
+Wanted. `list<T>` is the **only recursive type former the component model
+has**, which is what makes it expressible where a user-defined `tree` is not.
+A Rocq `list A` maps to `list<A'>` directly — no handles, no resources.
+
+The Rocq side is a cons-cell walk, and the ordinals fall out of
+[`repr.rs`](bindgen/src/repr.rs)'s `ordinal::assign(&[0, 2])`:
+
+| | CertiRocq | WIT |
+| --- | --- | --- |
+| `nil` | nullary, unboxed ordinal 0 → immediate `1` | length 0 |
+| `cons hd tl` | boxed ordinal 0 → pointer to `[0, hd, tl]` | one element |
+
+- **Lowering.** The caller writes a contiguous array into *our* memory through
+  `cabi_realloc` and hands over `(ptr, len)`. The adapter walks it backwards
+  building cons cells at `glob_mem_ptr`, 36 bytes each — `4*(arity+1)+24`, the
+  compiler's own `get_ctor_size` (`LambdaANF_to_Wasm.v:131`), so the slack the
+  memory invariants expect is preserved.
+- **Lifting.** Walk the chain once to count, bump `glob_mem_ptr` for
+  `len × size_of(T)` at `T`'s canonical alignment, walk again writing elements,
+  return `(ptr, len)`. Two passes, because a bump allocator cannot grow a
+  region in place.
+
+What is genuinely new: `cabi_realloc` (align up, allocate, copy
+`min(old, new)`, never free — a dozen instructions against a bump allocator); a
+`memory.grow` path in the adapter, since it cannot reuse the backend's
+`call_grow_mem_if_necessary` (`:300`); `post-return`, legally a no-op because
+nothing is ever freed; and element recursion, so `list<list<u64>>` works by
+construction.
+
+**[Strings](#strings) pay for almost all of that** — same `cabi_realloc`, same
+growth path, same two-pass lift. So lists are best sequenced after strings,
+where the remaining delta is element recursion rather than new mechanism.
+
+Two caveats that do not go away:
+
+- **No GC.** A list of *n* elements costs *n* cons cells plus the
+  canonical-ABI array, all leaked until `max_mem_pages`. Fine one-shot; a
+  repeatedly-invoked list export will hit the ceiling.
+- **The memory binding.** `canon lift` has to be bound to the merged module's
+  single memory or list reads silently hit the wrong one. This is what makes
+  the `--enable-multimemory` flag in `testing/examples/component/plus1/Makefile`
+  worth verifying — it matters far more for lists than for scalars, where only
+  the result pointer touches memory.
+
+Still not expressible either way: recursive *user* inductives. `list` is the
+only recursive former, so a Rocq `tree` has no WIT type short of
+[resources](#resources).
+
 ### <a id="strings"></a>Strings — `E-STRING`
 
 Wanted. A `string` is bytes under an encoding choice that `canon lift` forces
@@ -306,9 +357,9 @@ on you, so it brings real canonical-ABI machinery with it:
 - Walking the Rocq value in both directions, and a decision between `string`,
   `list ascii` and a byte array on the Rocq side.
 
-Generic [`list<T>`](#lists) stays out of scope: `string` is one concrete
-element type and one encoding, which is a far smaller problem than the general
-former.
+[`list<T>`](#lists) is wanted too, and shares almost all of this machinery, so
+the two are best sequenced together — strings first, since one concrete element
+type and one encoding is the smaller problem.
 
 ### <a id="imports"></a>Imports — `E-IMPORT`
 
@@ -340,21 +391,11 @@ one bit short.
 
 ## Out of scope
 
-### <a id="lists"></a>Lists and maps — `E-LIST`, `E-MAP`
+### <a id="maps"></a>`map` — `E-MAP`
 
-`list<T>`, fixed-length lists, and `map<K, V>`. This is the one part that needs
-real canonical-ABI machinery:
-
-- `cabi_realloc`, because a caller lowering a list has to allocate in *our*
-  memory. Against a bump allocator this is nearly trivial — allocate and copy,
-  never free — but it has to exist, along with the ownership and `post-return`
-  questions that come with it.
-- Cons-cell walking in both directions: building a Rocq `list` from a flat
-  canonical-ABI buffer, and walking one back out.
-
-Deliberately cut. It was the largest and riskiest chunk of the original
-estimate, and dropping it is what makes the rest self-contained rather than
-phased. `map` additionally needs a key ordering both sides agree on.
+Everything [lists](#lists) need, plus a key ordering both sides agree on — and
+there is no canonical Rocq map type to agree with, so the choice would be the
+tool's to impose rather than to follow.
 
 ### <a id="f32"></a>`f32` — `E-FLOAT`
 

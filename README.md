@@ -80,7 +80,8 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `s8`, `s16`, `s32`, `s64` | [wanted, unscheduled](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
 | `f64` | planned (phase 4) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
 | `f32` | [not planned](TODO.md#f32) | `PrimFloat` is binary64 only; nothing carries an `f32` faithfully |
-| `list<T>`, fixed-length lists, `map<K, V>` | [not planned](TODO.md#lists) | needs `cabi_realloc` + cons-cell walking |
+| `list<T>`, fixed-length lists | [wanted, unscheduled](TODO.md#lists) | the one recursive former WIT has; shares machinery with strings |
+| `map<K, V>` | [not planned](TODO.md#maps) | needs a key ordering with no canonical Rocq map to follow |
 | `string` | [wanted, unscheduled](TODO.md#strings) | brings `cabi_realloc` and value walking with it |
 | `char` | [not planned](TODO.md#char) | no faithful Rocq counterpart |
 | `flags` | [not planned](TODO.md#flags) | a bitfield with no Rocq counterpart |
