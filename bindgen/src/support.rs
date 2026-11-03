@@ -139,10 +139,10 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
                 "E-IMPORT",
                 format!("import {name}"),
                 site,
-                Reason::OutOfScope,
+                Reason::Later,
                 "imports",
-                "the generated module can only export; mod_imports := [] is baked into \
-                 LambdaANF_to_Wasm_instantiation.v",
+                "exports-only for now: mod_imports := [] is baked into the instantiation \
+                 proof, so supporting imports means reworking it",
             ),
             WorldItem::Type { id, .. } => check_world_type(resolve, *id, &site, &mut rep),
         }
@@ -177,7 +177,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
             "a world with no exported functions",
             format!("world {}", w.name),
             Reason::OutOfScope,
-            "imports",
+            "nothing-to-compile",
             "there would be nothing for CertiRocq to compile",
         );
     }
@@ -376,10 +376,10 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut 
             "E-STRING",
             "string",
             site.to_string(),
-            Reason::OutOfScope,
+            Reason::Later,
             "strings",
-            "strings are lists of bytes under an encoding choice, so they need cabi_realloc \
-             and the same cons-cell walking lists do",
+            "wanted, but a string is bytes under an encoding choice, so it brings \
+             cabi_realloc and walking the Rocq value in both directions with it",
         ),
         Type::ErrorContext => rep.reject(
             "E-ASYNC",
@@ -504,7 +504,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: 
             format!("an unresolved type ({shown})"),
             site.to_string(),
             Reason::OutOfScope,
-            "imports",
+            "unresolved",
             "the world did not resolve; this usually means a missing dependency package",
         ),
     }

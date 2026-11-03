@@ -33,12 +33,14 @@ section.
 | `E-FLOAT` | `f64` | [planned, phase 4](#f64) |
 | `E-FLOAT` | `f32` | [not planned](#f32) |
 | `E-LIST`, `E-MAP` | `list`, fixed-length list, `map` | [out of scope](#lists) |
-| `E-STRING` | `string` | [out of scope](#strings) |
+| `E-STRING` | `string` | [wanted, not scheduled](#strings) |
 | `E-CHAR` | `char` | [out of scope](#char) |
 | `E-FLAGS` | `flags` | [out of scope](#flags) |
 | `E-RESOURCE` | `resource`, `own`, `borrow`, methods | [out of scope](#resources) |
 | `E-ASYNC` | `async func`, `future`, `stream`, `error-context` | [out of scope](#async) |
-| `E-IMPORT`, `E-NO-EXPORT`, `E-UNKNOWN` | imported functions and interfaces | [out of scope](#imports) |
+| `E-IMPORT` | imported functions and interfaces | [wanted, not scheduled](#imports) |
+| `E-NO-EXPORT` | a world with nothing to export | [rejected outright](#nothing-to-compile) |
+| `E-UNKNOWN` | a world that did not resolve | [rejected outright](#unresolved) |
 | `E-EXPORT-INTERFACE` | `export some:pkg/iface` | [out of scope](#exported-interfaces) |
 | — | verified glue | [research project](#verified-glue) |
 
@@ -211,6 +213,38 @@ declared width, so every lift needs a range check and somewhere to report the
 overflow. `u64` needs a guard in one direction only, which is why it came
 first.
 
+### <a id="strings"></a>Strings — `E-STRING`
+
+Wanted. A `string` is bytes under an encoding choice that `canon lift` forces
+on you, so it brings real canonical-ABI machinery with it:
+
+- `cabi_realloc`, because a caller lowering a string has to allocate in *our*
+  memory. Against a bump allocator this is nearly trivial — allocate and copy,
+  never free — but it has to exist, with the ownership and `post-return`
+  questions that follow.
+- Walking the Rocq value in both directions, and a decision between `string`,
+  `list ascii` and a byte array on the Rocq side.
+
+Generic [`list<T>`](#lists) stays out of scope: `string` is one concrete
+element type and one encoding, which is a far smaller problem than the general
+former.
+
+### <a id="imports"></a>Imports — `E-IMPORT`
+
+Wanted, and the most expensive item here, because the cost is in the proof
+rather than the generator. `mod_imports := []` is baked into the correctness
+proof: `module_instantiate_INV_and_more_hold`
+(`LambdaANF_to_Wasm_instantiation.v:1234`) instantiates with `[]`, and the store
+invariants assume the resulting index layout. Exports-only keeps the existing
+proof intact; a world with imports means reworking `instantiation.v`.
+
+An import also runs the ABI the other way round — the adapter becomes the
+*callee's* caller, lowering Rocq values out and lifting results back in — so it
+needs the lift/lower pair in the mirror direction as well.
+
+Imported *types*, which is what a `use` statement produces, are already fine:
+they are just names, and the gate lets them through.
+
 ### <a id="signed-integers"></a>Signed integers — `E-SIGNED`
 
 Only unsigned integers are supported. `s8` … `s64` need a decision first:
@@ -240,12 +274,6 @@ real canonical-ABI machinery:
 Deliberately cut. It was the largest and riskiest chunk of the original
 estimate, and dropping it is what makes the rest self-contained rather than
 phased. `map` additionally needs a key ordering both sides agree on.
-
-### <a id="strings"></a>Strings — `E-STRING`
-
-A `string` is a list of bytes plus an encoding choice that `canon lift` forces
-on you, so it needs everything [lists](#lists) need and a decision about
-`string` vs `list ascii` vs a byte array on the Rocq side.
 
 ### <a id="f32"></a>`f32` — `E-FLOAT`
 
@@ -280,20 +308,6 @@ become the blocker.
 `async func`, `future<T>`, `stream<T>`, `error-context`. The async ABI is still
 moving, and the generated module is single-threaded and synchronous. Pin the
 sync subset.
-
-### <a id="imports"></a>Imports — `E-IMPORT`, `E-NO-EXPORT`, `E-UNKNOWN`
-
-Imported functions and interfaces. `mod_imports := []` is baked into the
-correctness proof: `module_instantiate_INV_and_more_hold`
-(`LambdaANF_to_Wasm_instantiation.v:1234`) instantiates with `[]`, and the store
-invariants assume the resulting index layout. Exports-only keeps the existing
-proof intact; a world with imports means reworking `instantiation.v`.
-
-Imported *types*, which is what a `use` statement produces, are fine — they are
-just names, and the gate lets them through.
-
-`E-UNKNOWN` is the related failure where a world didn't resolve, usually a
-missing dependency package.
 
 ### <a id="exported-interfaces"></a>Exported interfaces — `E-EXPORT-INTERFACE`
 
@@ -330,3 +344,22 @@ contribution hiding in here is the **canonical ABI as an executable Rocq spec**,
 differential-tested against `wasm-tools` — useful to anyone checking
 `wit-bindgen`, and it validates the highest-risk code in this tool without the
 lift/lower proofs.
+
+---
+
+## Rejected outright
+
+Not deferred features — there is nothing to build.
+
+### <a id="nothing-to-compile"></a>No exported function — `E-NO-EXPORT`
+
+A world with no exported function gives CertiRocq nothing to compile. Note that
+this also fires alongside `E-EXPORT-INTERFACE`, when every export the world has
+is a namespaced interface.
+
+### <a id="unresolved"></a>Unresolved world — `E-UNKNOWN`
+
+A type that survived resolution unresolved, which in practice means a missing
+dependency package rather than anything about the backend. `wit-parser`
+normally reports this first; the check exists so an unresolved type can never
+be mistaken for a supported one.

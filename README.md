@@ -60,7 +60,7 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `f64` | planned (phase 4) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
 | `f32` | [not planned](TODO.md#f32) | `PrimFloat` is binary64 only; nothing carries an `f32` faithfully |
 | `list<T>`, fixed-length lists, `map<K, V>` | [not planned](TODO.md#lists) | needs `cabi_realloc` + cons-cell walking |
-| `string` | [not planned](TODO.md#strings) | a list plus an encoding choice |
+| `string` | [wanted, unscheduled](TODO.md#strings) | brings `cabi_realloc` and value walking with it |
 | `char` | [not planned](TODO.md#char) | no faithful Rocq counterpart |
 | `flags` | [not planned](TODO.md#flags) | a bitfield with no Rocq counterpart |
 | `resource`, `own<T>`, `borrow<T>` | [not planned](TODO.md#resources) | needs handle tables and destructors; there is no GC |
@@ -74,7 +74,7 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | several parameters | planned (phase 2) | iterated closure application |
 | no parameters, or no result | planned (phase 2) | different adapter prologue |
 | several exports | planned (phase 2) | one compiled `MkExports` term carrying every closure |
-| imports | [not planned](TODO.md#imports) | `mod_imports := []` is baked into the correctness proof |
+| imports | [wanted, unscheduled](TODO.md#imports) | `mod_imports := []` is baked into the correctness proof |
 | `export some:pkg/iface` | [not planned](TODO.md#exported-interfaces) | only top-level function exports |
 | verified glue | [research project](TODO.md#verified-glue) | the adapter is trusted, as the C glue is |
 
