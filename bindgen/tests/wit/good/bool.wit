@@ -1,0 +1,2 @@
+package local:ok;
+world w { export negb: func(val: bool) -> option<bool>; }

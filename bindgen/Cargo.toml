@@ -1,0 +1,12 @@
+[package]
+name = "rocq-component-bindgen"
+version = "0.1.0"
+edition = "2021"
+description = "Generate Rocq interfaces and canonical-ABI glue for CertiRocq's Wasm backend from a WIT world"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+wit-parser = "0.254"

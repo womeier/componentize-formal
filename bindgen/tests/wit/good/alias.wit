@@ -1,0 +1,5 @@
+package local:ok;
+world w {
+  type answer = option<u32>;
+  export ask: func(q: u32) -> answer;
+}

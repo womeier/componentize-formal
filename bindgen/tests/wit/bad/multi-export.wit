@@ -1,0 +1,5 @@
+package local:bad;
+world w {
+  export plus1: func(val: u64) -> option<u64>;
+  export negb: func(val: bool) -> option<bool>;
+}

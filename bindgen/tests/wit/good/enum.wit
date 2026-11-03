@@ -1,0 +1,5 @@
+package local:ok;
+world w {
+  enum colour { red, green, blue }
+  export next: func(c: colour) -> option<colour>;
+}

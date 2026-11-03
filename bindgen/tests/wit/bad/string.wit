@@ -1,0 +1,2 @@
+package local:bad;
+world w { export shout: func(s: string) -> option<u32>; }

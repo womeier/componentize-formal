@@ -1,0 +1,2 @@
+package local:bad;
+world w { export neg: func(x: s32) -> option<u32>; }

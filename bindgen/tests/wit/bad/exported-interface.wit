@@ -1,0 +1,3 @@
+package local:bad;
+interface maths { plus1: func(val: u64) -> option<u64>; }
+world w { export maths; }

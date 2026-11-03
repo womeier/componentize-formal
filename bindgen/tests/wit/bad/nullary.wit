@@ -1,0 +1,2 @@
+package local:bad;
+world w { export answer: func() -> option<u64>; }

@@ -1,0 +1,2 @@
+package local:bad;
+world w { export half: func(x: f64) -> option<f32>; }

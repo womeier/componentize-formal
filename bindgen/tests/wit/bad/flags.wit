@@ -1,0 +1,5 @@
+package local:bad;
+world w {
+  flags perms { read, write }
+  export check: func(p: perms) -> option<bool>;
+}
