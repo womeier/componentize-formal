@@ -102,7 +102,7 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | imports | [wanted, unscheduled](TODO.md#imports) | `mod_imports := []` is baked into the correctness proof |
 | `export some:pkg/iface` | [not planned](TODO.md#exported-interfaces) | only top-level function exports |
 | Rocq as the source language | **supported** | the only frontend today |
-| Lean, Agda | [wanted, unscheduled](TODO.md#frontends) | [Peregrine](https://peregrine-project.github.io/) routes them through the same backend, so only the interface file and the compile driver differ |
+| Lean, Agda | [wanted, unscheduled](TODO.md#frontends) | [Peregrine](https://peregrine-project.github.io/) routes them through λ□ into this same backend, so only the interface file and the compile driver differ |
 | verified glue | [research project](TODO.md#verified-glue) | the adapter is trusted, as the C glue is |
 
 ## Layout

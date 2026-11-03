@@ -67,6 +67,22 @@ A wrong adapter does not announce itself: it reads the wrong bytes and
   must be able to report every way it can fail. See
   [the failure channel](#failure-channel).
 
+### <a id="cofix"></a>One silent failure the gate cannot see: cofixpoints
+
+The gate reads the WIT world, so it polices the interface, not the Rocq
+implementation behind it — and CertiRocq does not support `tCoFix`, [turning it
+into a placeholder rather than rejecting
+it](https://github.com/peregrine-project/peregrine-tool/issues/92). A
+`CoFixpoint` in the implementation compiles and returns a wrong answer.
+
+WIT has no coinductive types, so no world can ask for one; the exposure is an
+implementation using one internally, which a `Module Type` will admit.
+Peregrine hit this across five backends, Wasm among them, and fixed it in its
+middle-end by making `cofix_to_lazy` and `implement_lazy` required.
+
+Detecting it looks cheap: `CertiRocq Show IR` already dumps the IR, and the
+generator will be driving that invocation anyway.
+
 ## <a id="failure-channel"></a>The failure channel — `E-NO-CHANNEL`, `E-ERROR-TYPE`
 
 Every export must return `result<T, error>` with the `error` enum from the
@@ -397,63 +413,54 @@ they are just names, and the gate lets them through.
 
 ### <a id="frontends"></a>Other frontends: Lean and Agda
 
-Rocq is the only frontend today. The [Peregrine
-project](https://peregrine-project.github.io/) makes the others genuinely
-plausible rather than speculative, because its Wasm backend *is* this one:
-Peregrine routes Rocq, Lean and Agda through λ□ (LambdaBox) and compiles that
-to Wasm with [CertiRocq-wasm](https://github.com/womeier/certicoqwasm). Same
-backend, same emitted module, so the same value representation.
+Rocq is the only frontend today, but [Peregrine](https://peregrine-project.github.io/)
+makes the others plausible: it routes Rocq, Lean and Agda through λ□
+(LambdaBox) into CertiRocq's `CodegenWasm` — the same backend this uses. So
+almost nothing in the generator is about Rocq:
 
-That is the whole reason this is worth wanting: almost nothing in the generator
-is about Rocq.
-
-| Artifact | Frontend-specific? |
+| Frontend-specific | Shared |
 | --- | --- |
-| `adapter.wat` | no — it depends only on [`repr.rs`](bindgen/src/repr.rs), which is a fact about the backend |
-| the build rules | no — `wasm-merge`, `component embed`, `component new` are the same |
-| the WIT support gate | no — it decides what the *backend* can represent |
-| the type mapping | the semantics are shared through λ□; only the surface syntax differs |
-| `Iface.v` | yes — a Lean `structure`/signature, or an Agda record, in place of a Rocq `Module Type` |
-| `extraction.v` | yes — Peregrine's CLI is `peregrine wasm prog.ast -o prog.wasm`, taking a λ□ AST the frontend emits, rather than a `CertiRocq Compile Wasm` call from inside a `.v` |
+| `Iface.v` — a Lean signature or Agda record instead of a `Module Type` | `adapter.wat`, which depends only on [`repr.rs`](bindgen/src/repr.rs) |
+| `extraction.v` — `peregrine wasm prog.ast -o prog.wasm` over a λ□ AST, not a `CertiRocq Compile Wasm` call | the build rules, and the support gate, which gates the *backend* |
 
-So the shape this wants is a frontend seam with three members — render a type,
-render the interface file, drive compilation to `.wasm` — and everything else
-stays shared. Worth noting that routing *Rocq* through Peregrine too would
-collapse the last row into one path for all three.
+So: a frontend seam with three members — render a type, render the interface
+file, drive compilation. Routing Rocq through Peregrine too would collapse it
+to one path.
 
-What must be verified rather than assumed, each being a silent failure if
-wrong:
+λ□ is untyped: erasure replaces types and proofs with `tBox`, leaving only the
+inductive declarations — constructor counts and arities, which is just what
+`repr.rs`'s ordinal assignment reads. Hence WIT must be the source of truth for
+interface types (it already is), and the representation is uniform across
+frontends. What a frontend can still move is the constructor order erasure
+produces.
 
-1. **Primitive integers.** `u64` currently maps to `Uint63.int`, which the
-   backend boxes as 8 bytes behind a pointer. Peregrine's Lean frontend turns
-   `Nat` literals into `primInt`, so `Nat` plausibly lands on the same
-   representation — but Lean's `UInt64` is a separate type, and whether it
-   erases to that same primitive or to a structure wrapping one decides whether
-   the adapter reads a payload or a constructor block. Until that is checked,
-   a Lean world has to be rejected, not guessed at.
+Three things to verify rather than assume:
 
-2. **Constructor ordinals.** `match_ordinals_with_tag` numbers boxed and
-   unboxed constructors with independent counters over λ□'s constructor list,
-   so a WIT `enum` case maps to an ordinal only via the order erasure produces.
-   That order is a frontend fact. Lean's `Bool` is `false | true` like Rocq's,
-   which is suggestive and not evidence.
+1. **Primitive integers.** `u64` maps to `Uint63.int`, boxed as 8 bytes.
+   Peregrine's Lean frontend turns `Nat` literals into `primInt`, but Lean's
+   `UInt64` is a separate type, and whether it erases to that primitive or to a
+   structure wrapping one decides whether the adapter reads a payload or a
+   constructor block.
 
-3. **What the Peregrine-driven backend actually emits.** `peregrine wasm` is a
-   different driver from the `CertiRocq Compile Wasm` plugin, even over the same
-   backend. [`checks/representation.py`](checks/representation.py) is already
-   the instrument for this: point it at a module Peregrine produced and it will
-   say whether the exports, the import list, the memory count and the function
-   type indices still match `repr.rs`. That check is the cheap first step, and
-   it can be taken before any generator work.
+2. **Constructor ordinals.** `match_ordinals_with_tag` numbers constructors
+   over λ□'s list, so a WIT `enum` case reaches an ordinal only via erasure's
+   order. Lean's `Bool` is `false | true` like Rocq's — suggestive, not
+   evidence.
 
-Peregrine's Lean frontend does not support string literals, primitive floats or
-arrays, which overlaps the gate's own gaps ([strings](#strings),
-[lists](#lists)) — so a Lean world would be the intersection of two subsets,
-and the gate would have to know which frontend it is gating for.
+3. **What `peregrine wasm` emits.** Same backend, different revision: Peregrine
+   pins [`peregrine-project/certirocq#a8dc26fe`](https://github.com/peregrine-project/peregrine-tool/pull/101)
+   (main `f1e46a48` + the LLVM branch + fixes, MetaRocq `1.5.1+9.1+dev`) where
+   this repo pins the 0.9.1+9.1 release. Two revisions agree on the
+   representation until they don't.
+   [`checks/representation.py`](checks/representation.py) is the instrument:
+   point it at a Peregrine-built module. Cheap, and needs no generator work.
 
-Nothing in `component.toml` selects a frontend today, and nothing should until
-there is a second one: a key whose only valid value is `rocq` is just a way to
-be wrong later.
+Peregrine's Lean frontend supports no string literals, floats or arrays, which
+overlaps the gate's own gaps — a Lean world is the intersection of two subsets,
+so the gate would need to know which frontend it gates for.
+
+No `component.toml` key selects a frontend, and none should until there is a
+second one.
 
 ### <a id="signed-integers"></a>Signed integers — `E-SIGNED`
 
