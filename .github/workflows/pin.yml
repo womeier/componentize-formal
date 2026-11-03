@@ -37,9 +37,11 @@ jobs:
         with:
           extra_nix_config: accept-flake-config = true
 
-      # --max-jobs 0 forbids local building, so a cache miss fails in seconds
-      # instead of compiling MetaRocq for hours.
-      - run: nix build --max-jobs 0 --print-build-logs .#certirocq .#metarocq .#compcert
+      # The logic lives in the script, which explains what it concludes and
+      # why a dev shell cannot be checked directly. Runs standalone too.
+      # Runner python3; the script only needs `nix` on PATH.
+      - run: python3 checks/substitutable.py
 
-      - name: The dev shell is substitutable too
-        run: nix develop --max-jobs 0 --command rocq --version
+      # A smoke test that the shell is usable, not a substitutability claim:
+      # `nix develop` always builds the shell's own wrapper derivation.
+      - run: nix develop --command rocq --version
