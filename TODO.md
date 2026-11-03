@@ -402,14 +402,20 @@ they are just names, and the gate lets them through.
 
 ### <a id="frontends"></a>The Lean frontend
 
-[Peregrine](https://peregrine-project.github.io/) routes Rocq and Lean — and
-Agda, which is [out of scope](#agda) — through λ□ (LambdaBox) into CertiRocq's
-`CodegenWasm`, the same backend this uses. So almost nothing in the generator
-is about Rocq: only `Iface.v` (a Lean signature in place of a `Module Type`)
-and `extraction.v` (`peregrine wasm prog.ast`, not a
-`CertiRocq Compile Wasm` call). The adapter,
-the build rules and the gate are all shared. That is a frontend seam with three
-members: render a type, render the interface file, drive compilation.
+Lean needs something to get it into λ□. The
+[Peregrine project](https://peregrine-project.github.io/) — a separate effort,
+unaffiliated with this one — has that frontend, and routes Rocq and Lean (and
+Agda, which is [out of scope](#agda)) through λ□ (LambdaBox) into CertiRocq's
+`CodegenWasm`, the backend this uses. So Lean support here would mean invoking
+`peregrine` as an external tool, the way the build already invokes `wasm-tools`
+and `wasm-merge`.
+
+Almost nothing in the generator is about Rocq, which is what makes this cheap:
+only `Iface.v` (a Lean signature in place of a `Module Type`) and `extraction.v`
+(a `peregrine wasm prog.ast` invocation rather than `CertiRocq Compile Wasm`).
+The adapter, the build rules and the gate are all shared. That is a frontend
+seam with three members: render a type, render the interface file, drive
+compilation.
 
 λ□ is untyped — erasure replaces types and proofs with `tBox`, leaving only the
 inductive declarations, which is just what `repr.rs`'s ordinal assignment reads.
@@ -512,7 +518,7 @@ so it waits for that.
 
 ### <a id="agda"></a>Agda — out of scope for now
 
-Peregrine has an Agda frontend into λ□, so the machinery would be shared with
+Peregrine also has an Agda frontend into λ□, so the machinery would be shared with
 [Lean](#frontends) — the adapter, the build rules and the gate are all
 frontend-independent. It is a scope decision, not a technical obstacle: two
 frontends is the commitment, and each one costs an interface renderer, a compile
