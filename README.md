@@ -103,7 +103,7 @@ pointer into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `export some:pkg/iface` | [not planned](TODO.md#exported-interfaces) | only top-level function exports |
 | Rocq as the source language | **supported** | the default, and the only one implemented |
 | Lean | [wanted, unscheduled](TODO.md#frontends) | selectable (`--frontend lean`) and rejected with a reason; [Peregrine](https://peregrine-project.github.io/) routes it through λ□ into this same backend, so only the interface file and the compile driver differ |
-| Agda | [wanted, unscheduled](TODO.md#frontends) | same route, no selector yet |
+| Agda | [not planned](TODO.md#agda) | same route through λ□, but two frontends is the commitment |
 | verified glue | [research project](TODO.md#verified-glue) | the adapter is trusted, as the C glue is |
 
 ## Layout

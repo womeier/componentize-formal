@@ -400,13 +400,14 @@ needs the lift/lower pair in the mirror direction as well.
 Imported *types*, which is what a `use` statement produces, are already fine:
 they are just names, and the gate lets them through.
 
-### <a id="frontends"></a>Other frontends: Lean and Agda
+### <a id="frontends"></a>The Lean frontend
 
-[Peregrine](https://peregrine-project.github.io/) routes Rocq, Lean and Agda
-through λ□ (LambdaBox) into CertiRocq's `CodegenWasm` — the same backend this
-uses. So almost nothing in the generator is about Rocq: only `Iface.v` (a Lean
-signature or Agda record in place of a `Module Type`) and `extraction.v`
-(`peregrine wasm prog.ast`, not a `CertiRocq Compile Wasm` call). The adapter,
+[Peregrine](https://peregrine-project.github.io/) routes Rocq and Lean — and
+Agda, which is [out of scope](#agda) — through λ□ (LambdaBox) into CertiRocq's
+`CodegenWasm`, the same backend this uses. So almost nothing in the generator
+is about Rocq: only `Iface.v` (a Lean signature in place of a `Module Type`)
+and `extraction.v` (`peregrine wasm prog.ast`, not a
+`CertiRocq Compile Wasm` call). The adapter,
 the build rules and the gate are all shared. That is a frontend seam with three
 members: render a type, render the interface file, drive compilation.
 
@@ -508,6 +509,16 @@ Only top-level `export name: func(..)` is handled. Exporting a named interface
 is mostly a naming question — the adapter would export
 `ns:pkg/iface#func` — but it interacts with [several exports](#multi-export),
 so it waits for that.
+
+### <a id="agda"></a>Agda — out of scope for now
+
+Peregrine has an Agda frontend into λ□, so the machinery would be shared with
+[Lean](#frontends) — the adapter, the build rules and the gate are all
+frontend-independent. It is a scope decision, not a technical obstacle: two
+frontends is the commitment, and each one costs an interface renderer, a compile
+driver and its own answers to the three representation questions. `--frontend`
+accepts `rocq` and `lean` only, so asking for Agda is a CLI error rather than
+anything subtler.
 
 ### <a id="verified-glue"></a>Verified glue
 
