@@ -235,6 +235,18 @@ Constant functions, not `negb`: an involution hides a swapped encoding
 completely, because lifting and lowering with the same wrong mapping cancels
 out and every answer still looks right.
 
+Finding that wrapper is the part that moved with the CertiRocq below. The
+module now exports *every* function the pipeline generated, each under a
+mangled name --- `_0__reccall_wrapper_193`, `_1__f_case_known_194` --- where
+the release exported the definition's wrapper and nothing else, so the export
+list no longer says which function belongs to the definition. The check reads
+the code pointer out of the closure `main_function` leaves in `result` and
+follows that, which is the path the adapter takes at run time; the `elem`
+section maps function index to table index one to one, so the one constant
+serves as both. The immediates that came back were identical to what
+`measured.rs` already recorded, `bool`'s swap included --- the export shape
+moved, the encoding did not.
+
 A constructor that *takes arguments* carries an ordinal rather than an
 immediate, and compiles to a body full of the allocator's own constants with
 nothing marking which one it is. Those are read by diffing instead: two
@@ -293,10 +305,11 @@ whole pipeline — `rocq c`, `wasm-merge`, `component embed`,
 | two and three exports | `MkExports` field offsets (phase 2) |
 | `f64` round-trip | the boxed float, once `wasm-prim-floats` lands (phase 4) |
 
-It belongs in `nix flake check` beside 1b — otherwise a CertiRocq bump lands
-without anyone noticing the offsets moved — and it cannot be written before the
-generator emits adapters. CertiRocq on the per-push path is fine: always
-substituted, never built, which the `pin` workflow keeps true.
+It belongs in `nix flake check` beside 1b --- otherwise a CertiRocq bump lands
+without anyone noticing the offsets moved --- and it cannot be written before the
+generator emits adapters. What it can no longer assume is a free CertiRocq on
+the per-push path: see [the per-push path](#per-push) below, which the table
+export cost us.
 
 For the canonical-ABI half, the equivalent check is differential: diff generated
 layouts against `cargo component`'s for the matching Rust signature — see
@@ -313,108 +326,83 @@ compose. Not a near-term option, but the reason `repr.rs` is one file.
 ### <a id="table-export"></a>The backend exports the table
 
 The adapter reaches the compiled closures through the backend's own function
-table, so the generated module has to export it. The name is plain `table`,
-matching how the backend names the rest of its exports (`memory`, `result`,
-`mem_ptr`) rather than LLVM's `__indirect_function_table` --- the `exports`
-list in `LambdaANF_to_Wasm.v:555-572`, where a `MED_table 0%N` entry now sits
-next to the `MED_mem 0%N` one.
-
-Earlier it did not, and the build patched the export in between `rocq c` and
-`wasm-merge` with a `sed` line --- the one step of the pipeline that rewrote
-the backend's output instead of wrapping it, and so the one step that could
-make the linked module differ from the module the backend proved correct.
-Taking it out means no `patch-table` subcommand has to exist, and the
-generated build rules link against the backend's own bytes.
+table, so the module has to export it. The name is plain `table`, matching the
+rest of the backend's exports (`memory`, `result`, `mem_ptr`) rather than
+LLVM's `__indirect_function_table`: a `MED_table 0%N` entry next to the
+`MED_mem 0%N` one in `LambdaANF_to_Wasm.v`. Before it existed the build
+`sed`-ed the export in between `rocq c` and `wasm-merge` --- the one step that
+rewrote the backend's output instead of wrapping it. Now the generated build
+rules link the backend's own bytes.
 
 **Which CertiRocq.** `womeier/certirocq` at `wasm-export-table`, pinned to its
-head `546dd8a8`. No CertiRocq exports the table --- not the released
-`0.9.1+9.1` nixpkgs packages, and not upstream `main`, whose export list at
-`LambdaANF_to_Wasm.v:568` still ends at `MED_mem`. The branch is upstream
-`main` (`943b52ae`) plus one commit: eleven lines across
-`LambdaANF_to_Wasm.v` and `LambdaANF_to_Wasm_instantiation.v`, adding the
-`MED_table 0%N` entry and discharging the extra `ET_table` obligation the
-instantiation proof then carries, with nothing admitted. `rocq c` re-checks
-that obligation on every build, so a rebase that invalidates the proof fails
-the build rather than quietly losing it.
+head `546dd8a8`: upstream `main` plus eleven lines, adding the entry and
+discharging the `ET_table` obligation the instantiation proof then carries,
+nothing admitted. `rocq c` re-checks that obligation on every build, so a
+rebase that invalidates the proof fails the build instead of quietly losing
+it. No released CertiRocq exports the table and neither does `main`. Pinned by
+revision rather than by branch name, here and for MetaRocq below, because a
+branch pin follows the next rebase on its own --- a tree that compiled
+yesterday stops compiling with nothing in `flake.nix` having changed.
 
-Pinned by revision, not by branch name: a branch pin follows the next rebase
-by itself, which is how a tree that compiled yesterday stops compiling with
-nothing in `flake.nix` having changed. Bumping it is a one-line edit plus
-`nix flake lock`, and the revision in the store path says which one is
-installed.
+**What that costs.** `main` wants two dependencies newer than the nixpkgs pin
+has, so both become local builds:
 
-Rebased onto `main` rather than onto the release, because the release is 349
-commits back and carries the old WasmCert and MetaRocq bounds with it.
-
-**What that costs.** Two dependencies move past the nixpkgs pin, and both
-become local builds:
-
-- **WasmCert-Coq 2.2.1**, because `rocq-certirocq.opam:40` wants
-  `coq-wasm >= 2.2.1` and means it: `CodegenWasm/LambdaANF_to_Wasm_utils.v:1173`
-  uses `write_bytes_gen_preserve_length`, which 2.2.1 adds at
-  `Wasm/type_preservation.v:678` and 2.2.0 does not have anywhere. Against the
-  pin's 2.2.0 the compile stops there --- `The variable
-  write_bytes_gen_preserve_length was not found in the current environment`.
-  The pin's `wasmcert` expression has no `release."2.2.1"`, so the flake
-  supplies the `v2.2.1` tag and its hash in the attribute form `meta-fetch`
-  accepts. Cheap: 2.2.1 wants nothing newer than the pin has, and it built
-  against it unpatched.
+- **WasmCert-Coq 2.2.1**, because `LambdaANF_to_Wasm_utils.v:1173` uses
+  `write_bytes_gen_preserve_length`, which 2.2.1 adds and 2.2.0 does not have
+  anywhere. Cheap: it needs nothing newer than the pin already provides.
 - **MetaRocq at the head of its `9.1` branch** (`51b14e4b`), because
-  `Compiler/metarocq_pipeline.v:19` and `Compiler/correctness.v:36` import
+  `Compiler/metarocq_pipeline.v` imports
   `MetaRocq.Erasure.EImplementLazyForce`, which exists in no release ---
-  searching every output of the pinned 1.5.1-9.1 set (`erasure`,
-  `erasure-plugin`, `safechecker`, `pcuic`, `template-pcuic`) finds
-  `EImplementBox` and nothing else. The branch head has
-  `erasure/theories/EImplementLazyForce.v`, and satisfies everything the pin
-  provides: `rocq-core >= 9.1.0 & < 9.2` against 9.1.1, `rocq-equations >=
-  1.3.1` against 1.3.1+9.1, `rocq-stdlib` 9.x, `coq-ext-lib >= 0.12` against
-  0.13.1. Expensive: it is MetaRocq from source, hours, and it is in no cache
-  this flake can reach. Both spellings were tried against
-  `metarocq.cachix.org` and `coq-community.cachix.org` --- the revision pin
-  and upstream's own branch-name pin, which yields the `-dev` store names
-  their CI pushes --- and both miss, because upstream builds MetaRocq through
-  coq-nix-toolbox's overlays rather than this nixpkgs revision's expression.
+  the pinned 1.5.1-9.1 set has `EImplementBox` and nothing else. Expensive:
+  hours from source, and in no cache this flake can reach, including
+  `metarocq.cachix.org`, whose store names come from coq-nix-toolbox's
+  overlays rather than this nixpkgs revision's expression.
 
-**And this tree is not the release's tree.** The nixpkgs expression
-describes `0.9.1+9.1`, so two of its phases are wrong for `main`, and both
-would fail only after the whole of `theories` had compiled: the top-level
-Makefile now generates the plugin manifests with
-`plugins/manifests/generate.py`, which needs a `python3` the expression does
-not bring, and the plugins moved to `plugins/plugin` and `plugins/cplugin`,
-which its `installPhase` does not know. `flake.nix` corrects exactly those
-two, following CertiRocq's own
-`.nix/coq-overlays/CertiRocq/default.nix` --- the package its CI builds `main`
-with --- and deliberately does not follow that overlay's `coqprime` or its
-`metarocq` meta-package, neither of which anything under `theories` or
-`libraries` imports at this revision.
+The nixpkgs expression also describes `0.9.1+9.1`, so two of its phases are
+wrong for `main` and both would fail only after all of `theories` had
+compiled: the manifests are generated by `plugins/manifests/generate.py`,
+which needs a `python3` it does not bring, and the plugins moved to
+`plugins/plugin` and `plugins/cplugin`, which its `installPhase` does not
+know. `flake.nix` corrects those two, following CertiRocq's own
+`.nix/coq-overlays/CertiRocq/default.nix`.
 
-Pinned by revision, not by branch name, in both cases. `version = "9.1"` is
-what CertiRocq's `.nix/config.nix` writes, and it makes `meta-fetch` fetch the
-branch archive with no hash at all: impure, and it follows the branch, so two
-runs a day apart compile different MetaRocqs under one store name.
+The consequence for `checks/substitutable.py` is that it can no longer speak
+for MetaRocq, the build it existed to protect. It checks what is left ---
+CompCert, and the inputs MetaRocq is built from --- and says in its docstring
+what it gave up.
 
-The consequence is that `checks/substitutable.py` can no longer speak for
-MetaRocq, which is the build it existed to protect. It now checks what is left
---- CompCert, and the inputs MetaRocq itself is built from, which are the pin
-drifting if they ever stop being hits --- and says in its docstring what it
-gave up.
+**It compiles and runs.** All seven checks pass, and every example answers
+correctly through `make run`: CertiRocq's own module linked to the adapter,
+which could not be assembled at all before the export existed. Two things
+moved with the pin --- the plugin's flags are double-dashed now, `-file`
+replaced by `--output`, and the module's export shape changed, which
+[1b](#representation) covers.
 
-**Not yet compiled end to end.** Every gap above is closed with evidence ---
-the WasmCert lemma, the MetaRocq module, the two phases --- and MetaRocq
-itself built here clean, which was the long pole. But no CertiRocq has
-finished compiling against this set yet, so the dependency choices are
-justified rather than demonstrated. The first full `nix build .#certirocq`
-settles it, and `nix flake check` after it is the harder test: `smoke`,
-`generated` and `representation` measure the emitted module, and `main` is
-349 commits of backend work past what those fixtures were written against.
+Which CertiRocq a user compiles with is still an assumption the generator
+cannot check at run time, so it is checked where assumptions about the backend
+belong: `checks/representation.py` fails if the table is not exported, naming
+the input as the thing to move, and the generated build rules guard the link
+step the same way.
 
-**This is still an assumption about the CertiRocq being compiled against**,
-not something the generator can check at run time, so it is checked where
-assumptions about the backend belong: `checks/representation.py` reads the
-emitted module and fails if the table is not exported, naming the input as the
-thing to move, and the generated build rules guard the link step the same way.
-A CertiRocq predating the export cannot be used --- the adapter has nothing to
-link through.
+#### <a id="per-push"></a>Open: the per-push path no longer holds
+
+`.github/workflows/ci.yml` runs `nix build --max-jobs 0 .#certirocq` before
+`nix flake check`, so that a collected cache fails in seconds instead of
+starting MetaRocq on a runner. That assertion now fails by construction, all
+three moved packages being uncached, and without it `nix flake check` would
+try the build --- hours, on a 6-hour runner. `pin.yml`'s header still says
+nothing heavy is ever built locally. So CI cannot be green on this pin. Three
+ways out, none taken:
+
+- **A Cachix this repo owns**, with `--max-jobs 0` pointing at it. Restores
+  the path for everyone cloning, not just CI; needs a cache, a token, and a
+  job that pushes when `flake.lock` moves.
+- **Split the gate.** Only `representation` needs Rocq; the other six are the
+  `bindgen` shell and can stay per-push. Cheap, and it gives up the one check
+  that holds `repr.rs` to the real backend.
+- **Get the export upstream.** Merged and released, CertiRocq is a nixpkgs
+  cache hit again. Slowest, and the only one that removes the problem instead
+  of paying for it.
 
 ### <a id="extract-inductives"></a>A remapping the generator cannot see
 
