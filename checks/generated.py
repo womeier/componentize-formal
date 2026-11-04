@@ -19,6 +19,11 @@ differently:
 Also runs `make -n` over the generated build rules, which proves they parse and
 that every prerequisite resolves without needing Rocq.
 
+Some examples are written *ahead* of the gate, for constructs `generate` still
+turns away -- they are the target the support work is written against. Those
+have no generated counterpart, so what is checked is the refusal: non-zero
+exit, the right rejection code, and nothing written.
+
 Needs the generator on the command line, since the one in the Nix store is the
 one the rest of `nix flake check` tested:
 
@@ -42,6 +47,15 @@ from smoke import EXPECTED, run_target  # noqa: E402
 # The Makefile has none: the examples' own carries stub targets this tool has
 # no business emitting, so it is checked by `make -n` instead.
 COMPARED = ["interface.v", "extraction.v", "adapter.wat"]
+
+# Examples written ahead of the gate: hand-written, measured, and running, for
+# constructs `generate` still turns away. They have no generated counterpart to
+# compare against -- what is checked instead is that the generator *refuses*
+# them, with the code below. An example the gate silently accepted and emitted
+# something for would be worse than one it rejects.
+AHEAD_OF_THE_GATE = {
+    "record": "E-STRUCTURED",
+}
 
 
 def tokens(text: str, comment: str) -> list[str]:
@@ -192,6 +206,57 @@ def diff(want: list[str], got: list[str]) -> list[str]:
     return lines
 
 
+def check_refused(generator: Path, example: Path, code: str) -> list[str]:
+    """The generator must turn this example's world away, and say which code.
+
+    These examples exist precisely because the construct is not supported, so
+    the thing to verify is the refusal: a non-zero exit, the rejection code in
+    the report, and nothing written. Checking the code rather than only the
+    exit status is what stops this passing for an unrelated reason -- a typo in
+    the world file would also exit non-zero.
+    """
+    problems = []
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "gen"
+        out.mkdir()
+        shutil.copytree(example / "wit", out / "wit")
+        shutil.copy(example / "component.toml", out / "component.toml")
+        result = subprocess.run(
+            [str(generator), "generate", "--config", str(out / "component.toml")],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        report = result.stdout + result.stderr
+        if result.returncode == 0:
+            problems.append(
+                f"{example.name}: `generate` succeeded, but this example is "
+                f"here because the gate rejects it with {code}. Either the "
+                "construct is supported now -- in which case move the example "
+                "out of AHEAD_OF_THE_GATE and let the token comparison hold "
+                f"the emitter to it -- or the gate has a hole.\n{report}"
+            )
+        elif code not in report:
+            problems.append(
+                f"{example.name}: `generate` failed without reporting {code}, "
+                f"so it was turned away for some other reason:\n{report}"
+            )
+        untouched = {"wit", "component.toml"}
+        wrote = [p.name for p in out.iterdir() if p.name not in untouched]
+        if wrote:
+            problems.append(
+                f"{example.name}: `generate` was refused but still wrote "
+                f"{sorted(wrote)}"
+            )
+    if not problems:
+        print(
+            f"generated: {example.name} is refused with {code}, and nothing "
+            "written",
+            flush=True,
+        )
+    return problems
+
+
 def check_fixture(generator: Path, fixture: Path) -> list[str]:
     """Generate for one supported-subset fixture and parse what came out.
 
@@ -261,9 +326,22 @@ def main() -> int:
             "build` in bindgen/, or pass --generator."
         )
 
+    unknown = set(AHEAD_OF_THE_GATE) - set(EXPECTED)
+    if unknown:
+        raise SystemExit(
+            f"generated: AHEAD_OF_THE_GATE names {sorted(unknown)}, which "
+            "checks/smoke.py does not know. An example nothing runs is an "
+            "example that rots."
+        )
+
     problems: list[str] = []
     for name in sorted(EXPECTED):
-        problems += check_example(args.generator, args.examples / name)
+        if name in AHEAD_OF_THE_GATE:
+            problems += check_refused(
+                args.generator, args.examples / name, AHEAD_OF_THE_GATE[name]
+            )
+        else:
+            problems += check_example(args.generator, args.examples / name)
 
     fixtures = sorted(args.fixtures.glob("*.wit"))
     if not fixtures:
@@ -286,7 +364,10 @@ def main() -> int:
         )
         return 1
 
-    print("generated: every example's code and answers come out of the generator")
+    print(
+        "generated: every example is either emitted exactly or refused with a "
+        "reason"
+    )
     return 0
 
 

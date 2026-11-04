@@ -1,0 +1,12 @@
+package local:demo;
+
+world wrapper-world {
+    use certirocq:abi/errors@0.1.0.{error};
+
+    record span {
+        start: u64,
+        byte-length: u64,
+    }
+
+    export grow: func(s: span) -> result<span, error>;
+}

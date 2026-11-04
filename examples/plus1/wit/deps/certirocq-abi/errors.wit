@@ -4,7 +4,7 @@ package certirocq:abi@0.1.0;
 ///
 /// These belong to the adapter, not to the Rocq function. A Rocq function
 /// cannot run out of memory in its own type, and nothing in Rocq knows that a
-/// value has to fit a WIT width, so the generated `Iface.v` never mentions
+/// value has to fit a WIT width, so the generated `interface.v` never mentions
 /// this enum: `export f: func(x: u64) -> result<u64, error>` asks you for
 /// `f : int -> int`.
 ///

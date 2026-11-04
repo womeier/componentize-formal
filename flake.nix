@@ -167,7 +167,9 @@
         # The generator against the hand-written examples: same code, then the
         # same answers out of a component assembled from what it wrote. The
         # examples are never regenerated -- they were written and run before
-        # the emitter existed, which is what makes them a reference.
+        # the emitter existed, which is what makes them a reference. For the
+        # ones written ahead of the gate it checks the refusal instead: the
+        # right rejection code, and nothing written.
         #
         # `${./checks}/generated.py` rather than `${./checks/generated.py}`
         # because it imports the expectations from `smoke.py`, which has to be

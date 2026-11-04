@@ -15,7 +15,10 @@ them are load-bearing:
   * `plus1(9223372036854775808) = err(out-of-range)` -- that u64 has no
     Uint63.int, and the hand-written reference adapter in CertiRocq's
     testing/examples returns a wrong answer here instead.
-  * `err(out-of-memory)` -- the allocator is reported, not trapped on.
+  * `err(out-of-memory)` -- the allocator is reported, not trapped on. The
+    `record` example reaches it through the *second* check, after a call that
+    succeeded in building its closure and then ran out; delete that check and
+    the component answers `ok({start: 0, byte-length: 0})`.
 
 Runs against `stub/`, which stands in for CertiRocq's output, so it needs no
 Rocq and no nixpkgs pin -- just wasm-tools, binaryen and wasmtime.
@@ -54,6 +57,20 @@ EXPECTED: dict[str, dict[str, list[str]]] = {
         ],
         "run-stub-oom": [
             "negb(true) with the heap exhausted = err(out-of-memory)",
+        ],
+    },
+    "record": {
+        "run-stub": [
+            "grow({start:10,byte-length:1}) = ok({start: 10, byte-length: 2})",
+            "grow({start:0,byte-length:0}) = ok({start: 0, byte-length: 1})",
+            "grow({start:7,byte-length:9223372036854775807}) "
+            "= ok({start: 7, byte-length: 0})",
+            "grow({start:9223372036854775808,byte-length:0}) = err(out-of-range)",
+            "grow({start:0,byte-length:9223372036854775808}) = err(out-of-range)",
+        ],
+        "run-stub-oom": [
+            "grow({start:10,byte-length:1}) with the heap exhausted "
+            "= err(out-of-memory)",
         ],
     },
 }

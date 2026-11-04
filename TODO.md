@@ -487,6 +487,40 @@ is how any multi-field value crosses the boundary. A single-constructor
 inductive of arity *n* boxes as `[ord, f₀, …, fₙ₋₁]`, so the Rocq side is
 straightforward; the canonical-ABI side is where the care goes.
 
+**There is a target to build against.** [`examples/record`](examples/record) is
+the whole pipeline for
+
+```wit
+record span { start: u64, byte-length: u64 }
+export grow: func(s: span) -> result<span, error>;
+```
+
+hand-written, measured against a module the real CertiRocq compiled, and
+running --- `checks.smoke` holds it to its six answers. `checks.generated`
+holds the generator to *refusing* it, with `E-STRUCTURED`, until this section
+is done, so the day the gate starts accepting records is the day that check
+asks for the emitter to match the example token for token.
+
+Four things the example settles, none of them guessable from the sources:
+
+- A WIT record of two `u64`s **flattens** into two core `i64` parameters, so
+  nothing arrives by pointer and the adapter has to *build* the Rocq value:
+  a box per field, then `[0, &f₀, &f₁]` pointing at them. Each cell holds a
+  pointer, because a primitive int is itself boxed.
+- The backend reads each field through **its own table function**, which traps
+  unless the pointer is even and the ordinal is 0. So the ordinal has to be
+  written, not left to whatever the heap held --- and both of the example's
+  stubs arrive with a dirty heap, because over a zeroed page an adapter that
+  forgot it would pass.
+- The compiled body **reuses the caller's box** for a field it does not change,
+  which is why a record returned to the adapter can point back into the
+  adapter's own reservation. Nothing may assume the returned value is disjoint
+  from the argument.
+- The second out-of-memory check earns its keep here: a heap that runs out
+  *during* the call leaves the closure in `result`, and without the check the
+  component answers `ok({start: 0, byte-length: 0})`. `plus1`'s stub cannot
+  reach that branch.
+
 ### <a id="f64"></a>`f64` — `E-FLOAT`, phase 4
 
 Waiting on the backend's `wasm-prim-floats` branch, where an `f64` is boxed just

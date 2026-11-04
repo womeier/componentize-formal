@@ -97,6 +97,12 @@ generated one and requires the same answers from `wasmtime`. The first thing
 that check found was a boxed `u64` passed by value instead of by address — a
 component that assembles, runs, and answers nonsense.
 
+Some examples run *ahead* of the gate. [`examples/record`](examples/record) is
+the whole pipeline for a `record`, hand-written, measured against a module the
+real CertiRocq compiled, and answering correctly — for a construct `generate`
+still refuses. Those are the target the next support work is written against,
+and the check holds the generator to refusing them until it is done.
+
 ## WIT feature support
 
 Anything not marked **supported** is **rejected with a reason and a pointer
@@ -113,7 +119,7 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `result<T, error>` as the result | **required** | the [failure channel](TODO.md#failure-channel), on every export |
 | type aliases | **supported** | looked through |
 | `option`/`result` as a value | [not supported](TODO.md#option-result) | fixed shapes, known ordinals — no layout algorithm needed |
-| `record`, `tuple` | [not supported](TODO.md#structured-types) | needs split ordinal mapping + canonical-ABI layout |
+| `record`, `tuple` | [not supported](TODO.md#structured-types) | needs split ordinal mapping + canonical-ABI layout; [`examples/record`](examples/record) is the hand-written target, and it runs |
 | `variant` | [not supported](TODO.md#structured-types) | same machinery |
 | `s8`, `s16`, `s32`, `s64` | [not supported](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
 | `f64` | [not supported](TODO.md#f64) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
@@ -153,7 +159,7 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/src/emit/`](bindgen/src/emit) | the emitters: `rocq.rs`, `adapter.rs`, `build.rs`, each a pure function of the plan |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
-| [`examples/`](examples) | the whole pipeline for one export, hand-written before the emitter existed and so usable as evidence about it: [`plus1`](examples/plus1) and [`negb`](examples/negb) |
+| [`examples/`](examples) | the whole pipeline for one export, hand-written before the emitter existed and so usable as evidence about it: [`plus1`](examples/plus1), [`negb`](examples/negb), and [`record`](examples/record), which is ahead of the gate |
 | [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
@@ -175,7 +181,7 @@ so a green checkout is a green branch:
 | `abi-version` | `wit-parser`'s version must match the `wasm-tools` that ships, since they must compute the same canonical-ABI layout |
 | `representation` | compiles Rocq functions with the real CertiRocq and checks the emitted modules against every claim in `repr.rs`, including the constructor immediates |
 | `smoke` | assembles each example into a component and checks what `wasmtime` says it answers |
-| `generated` | generates for each example's world and requires the result to be the hand-written files token for token, then assembles the generated adapter and requires the same answers |
+| `generated` | generates for each example's world and requires the result to be the hand-written files token for token, then assembles the generated adapter and requires the same answers. For an example ahead of the gate, requires instead that the generator refuses it with the right code and writes nothing |
 
 The last four are Python scripts under [`checks/`](checks) and run standalone
 in `nix develop` as well, which is often what you want while changing

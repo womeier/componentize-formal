@@ -1,0 +1,23 @@
+package certirocq:abi@0.1.0;
+
+/// Failure modes the generated adapter can report.
+///
+/// These belong to the adapter, not to the Rocq function. A Rocq function
+/// cannot run out of memory in its own type, and nothing in Rocq knows that a
+/// value has to fit a WIT width, so the generated `interface.v` never mentions
+/// this enum: `export f: func(x: u64) -> result<u64, error>` asks you for
+/// `f : int -> int`.
+///
+/// Every export carries it, because every call can fail: the backend checks
+/// `glob_out_of_mem` after every call it makes, and the adapter has to check
+/// the same flag after the one it makes.
+interface errors {
+  enum error {
+    /// The bump allocator could not grow the memory any further.
+    out-of-memory,
+    /// A value crossing the boundary has no representation on the other side.
+    /// Today that means a `u64` argument of 2^63 or more, which does not fit
+    /// Rocq's primitive 63-bit integers.
+    out-of-range,
+  }
+}
