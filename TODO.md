@@ -56,10 +56,16 @@ A wrong adapter does not announce itself: it reads the wrong bytes and
   (`E-UNKNOWN`).
 - Every offending position is reported, not just the first, so one run tells you
   the whole story.
-- Anything that *narrows* rather than rejects gets a warning naming the
-  position, and `--deny-warnings` turns those into failures. Nothing warns
-  today: the one narrowing, `u64` carried by a 63-bit integer, is reported as a
-  failure mode through the error channel instead, which is strictly louder.
+- Anything that *narrows* rather than rejects would get a warning naming the
+  position. Nothing warns today, and the warning channel is reporting-only:
+  there was a `--deny-warnings` flag to escalate warnings into failures, and it
+  was removed because nothing could ever feed it. The one narrowing that exists,
+  `u64` carried by a 63-bit integer, is reported as a failure mode through the
+  error channel instead -- the adapter range-checks the argument and answers
+  `err(out-of-range)`, which is strictly louder than a compile-time note. If a
+  narrowing ever turns up that cannot be pushed into the error channel like
+  that, `Report::warnings` is still printed by both commands and escalating it
+  again is a few lines.
 - A construct that cannot be represented is rejected even when it is only
   declared and never used by an export, because it still shows up in the
   component's type. A world-level `resource` is the case that matters.

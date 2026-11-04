@@ -53,10 +53,6 @@ struct Input {
     /// the directory holding your implementation file.
     #[arg(long, value_name = "PATH")]
     out_dir: Option<PathBuf>,
-    /// Treat warnings as errors. Warnings mark narrowings the adapter has to
-    /// guard at runtime, so a build that wants no surprises should set this.
-    #[arg(long)]
-    deny_warnings: bool,
     /// Which proof assistant the implementation is written in. Overrides the
     /// config. Only `rocq` is implemented; see TODO.md#frontends.
     #[arg(long, value_enum)]
@@ -118,14 +114,6 @@ fn check(input: &Input) -> Result<ExitCode> {
         );
         return Ok(ExitCode::FAILURE);
     }
-    if input.deny_warnings && !report.warnings.is_empty() {
-        eprintln!(
-            "\n{} warning(s) in world `{}`, and --deny-warnings is set",
-            report.warnings.len(),
-            w.name()
-        );
-        return Ok(ExitCode::FAILURE);
-    }
     println!("ok: world `{}` is within the supported subset", w.name());
     Ok(ExitCode::SUCCESS)
 }
@@ -138,9 +126,6 @@ fn generate(input: &Input, force: bool) -> Result<ExitCode> {
     // runtime, so they are never suppressed on the way to output.
     for warning in &report.warnings {
         eprintln!("warning: {warning}");
-    }
-    if input.deny_warnings && !report.warnings.is_empty() {
-        bail!("warnings present and --deny-warnings is set; nothing generated");
     }
     if !report.is_ok() {
         for rejection in &report.rejections {
