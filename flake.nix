@@ -11,24 +11,35 @@
     nixpkgs.url = "github:NixOS/nixpkgs/fb9c9907f7655e040a5fedc979c80d386d7e7813";
 
     # CertiRocq itself comes from here rather than from nixpkgs, because the
-    # adapter needs the generated module to export its function table and the
-    # released 0.9.1+9.1 that nixpkgs pins does not -- see
-    # TODO.md#table-export. The branch adds the export to
-    # `LambdaANF_to_Wasm.v` and discharges the extra `ET_table` obligation in
-    # `LambdaANF_to_Wasm_instantiation.v`, so the instantiation proof still
-    # goes through; it is not admitted around.
+    # adapter needs the generated module to export its function table and no
+    # CertiRocq release exports it -- nor does `main`, whose export list at
+    # `LambdaANF_to_Wasm.v:568` still ends at `MED_mem`. See
+    # TODO.md#table-export.
     #
-    # Everything *else* about the Rocq package set still comes from the
-    # nixpkgs pin above, so MetaRocq, CompCert and WasmCert-Coq stay cache
-    # hits. Only CertiRocq is built locally, which is the price of the export.
+    # `womeier/certirocq` at `wasm-export-table`, pinned to its head
+    # `546dd8a8`: upstream `main` (`943b52ae`) plus one commit, the eleven
+    # lines that add the export to `LambdaANF_to_Wasm.v` and discharge the
+    # extra `ET_table` obligation the instantiation proof then carries in
+    # `LambdaANF_to_Wasm_instantiation.v`. Nothing is admitted around, and
+    # `rocq c` re-checks the obligation on every build, so a rebase that
+    # invalidates the proof fails here loudly rather than silently dropping
+    # it.
     #
-    # NOT YET BUILT. The branch is CertiRocq `main` plus one commit, 349
-    # commits past the release nixpkgs packages, and `main` wants a newer
-    # MetaRocq (`EImplementLazyForce`) and WasmCert-Coq 2.2.1 than this pin
-    # has. TODO.md#table-export lists the evidence and the fix: rebase the
-    # export commit onto `v0.9.1+9.1`.
+    # Pinned by revision, not by `wasm-export-table`: a branch pin would
+    # follow the next rebase on its own, which is how a tree that once
+    # compiled stops compiling with nothing in this file having changed.
+    #
+    # Rebased onto `main` rather than onto a release, because the release is
+    # 349 commits back and carries the old WasmCert and MetaRocq bounds with
+    # it. That is not free: `main` needs two dependencies newer than the
+    # nixpkgs pin has, so `rocqPkgs` below moves both and both become local
+    # builds -- WasmCert-Coq 2.2.1, which is short, and MetaRocq at the head
+    # of its `9.1` branch, which is hours. The comments there carry the
+    # evidence for each. Only CompCert and the rest of the Rocq set are still
+    # the cache hits `checks/substitutable.py` speaks for, and that check says
+    # what it can no longer cover.
     certirocq = {
-      url = "github:womeier/certirocq/wasm-export-table";
+      url = "github:womeier/certirocq/546dd8a89f6fe15756b5b67176650bc8222e4ad4";
       flake = false;
     };
   };
@@ -66,25 +77,158 @@
 
       # At this pin the Rocq package set still lives under `coqPackages`
       # (`rocqPackages` there has no CertiRocq attribute).
-      rocqPkgs = pkgs: pkgs.coqPackages;
-
-      # CertiRocq from the `certirocq` input, built against the dependency set
-      # the nixpkgs pin supplies. Only `src` is overridden: the build inputs,
-      # the Rocq version and the install layout are whatever nixpkgs decided
-      # for 0.9.1+9.1, which is what keeps this to one local build instead of
-      # a rebuild of the whole Rocq set.
       #
-      # `name`, not `version`: mkCoqDerivation sets `name` itself, so
-      # overriding `version` alone leaves the store path reading
-      # `coq9.1-CertiRocq-0.9.1+9.1` -- indistinguishable from the released
-      # package that does *not* export the table. Two different modules under
-      # one name is exactly the confusion this repo exists to avoid, so the
-      # branch is in the name.
-      certirocqFor = pkgs: (rocqPkgs pkgs).CertiRocq.overrideAttrs (old: {
-        name = "${old.name}-wasm-export-table";
-        version = "${old.version}-wasm-export-table";
-        src = certirocq;
+      # MetaRocq is moved to the head of its `9.1` branch, and it is the
+      # expensive one. CertiRocq `main` imports
+      # `MetaRocq.Erasure.EImplementLazyForce`
+      # (`theories/Compiler/metarocq_pipeline.v:19`,
+      # `theories/Compiler/correctness.v:36`), and that module exists in no
+      # MetaRocq release: the pinned 1.5.1-9.1 package set carries
+      # `EImplementBox` and nothing else, in any of its outputs. CertiRocq's
+      # own `.nix/config.nix` says the same thing -- its only bundle sets
+      # `metarocq.override.version = "9.1"` -- and `main` carries a commit
+      # named "Update to latest MetaRocq 9.1 branch", so the branch head is
+      # the version `main` is written against, not a version it tolerates.
+      #
+      # Pinned by revision rather than by the branch name upstream CI uses:
+      # `version = "9.1"` makes meta-fetch take the `isString` path, which
+      # fetches the branch archive with no hash at all. That evaluates only
+      # with `--impure` and silently follows the branch, so two runs a day
+      # apart would compile different MetaRocqs under the same store name.
+      #
+      # The branch head satisfies everything the pin provides -- its opam
+      # wants `rocq-core >= 9.1.0 & < 9.2` (9.1.1), `rocq-equations >= 1.3.1`
+      # (1.3.1+9.1), `rocq-stdlib` 9.x and `coq-ext-lib >= 0.12` (0.13.1) --
+      # so, like WasmCert, it needs no patching to build here.
+      #
+      # This one is not cheap: it is MetaRocq from source, and it is in no
+      # cache this flake can reach. Both spellings were checked against
+      # `metarocq.cachix.org` and `coq-community.cachix.org` -- this revision
+      # pin and upstream's branch-name pin, which produces the `-dev` store
+      # names their CI pushes -- and both miss, because upstream builds it
+      # through coq-nix-toolbox's overlays rather than this nixpkgs
+      # revision's expression. So `checks/substitutable.py` can no longer
+      # speak for MetaRocq; it says so, and says why.
+      #
+      # WasmCert-Coq is moved for a narrower reason, and cheaply. `main`'s
+      # `rocq-certirocq.opam:40` asks for `coq-wasm >= 2.2.1` and that is not
+      # a soft bound: `CodegenWasm/LambdaANF_to_Wasm_utils.v:1173` uses
+      # `write_bytes_gen_preserve_length`, which 2.2.1 adds in
+      # `Wasm/type_preservation.v:678` and 2.2.0 does not have anywhere. Built
+      # against the pin's 2.2.0 the compile stops exactly there, with
+      # `The variable write_bytes_gen_preserve_length was not found in the
+      # current environment`.
+      #
+      # 2.2.1 itself needs nothing newer than the pin already has -- its opam
+      # wants `coq-compcert >= 3.14` (the pin has 3.17, which is also the
+      # version CertiRocq pins exactly), `coq-mathcomp-ssreflect < 2.7~`
+      # (2.5.0), flocq 4.2.2, ext-lib 0.13.1 and ocaml `wasm` 2.0.2 -- so it
+      # compiles against this dependency set unpatched. Overriding in the
+      # scope rather than at the call site is what makes CertiRocq's
+      # `propagatedBuildInputs` name the same WasmCert its modules were
+      # compiled against; a `.override` on CertiRocq alone would leave 2.2.0
+      # propagated into every consumer's load path.
+      #
+      # The pin's `wasmcert` expression has `release` entries for 2.1.0 and
+      # 2.2.0 only, so 2.2.1 arrives as the attribute form `meta-fetch`
+      # accepts, supplying the tag and hash the missing entry would have held.
+      rocqPkgs = pkgs: pkgs.coqPackages.overrideScope (final: prev: {
+        metarocq = prev.metarocq.override {
+          version = {
+            version = "9.1-51b14e4b";
+            location = {
+              rev = "51b14e4bb5f4580f00f60208ff8dbf31f3ad6f56";
+              hash = "sha256-sQ4q/ndbWiiXg4xhT3mNfPz1qjOi3hTu5wfLm27lIjQ=";
+            };
+          };
+        };
+
+        wasmcert = prev.wasmcert.override {
+          version = {
+            version = "2.2.1";
+            location = {
+              rev = "v2.2.1";
+              hash = "sha256-RtJXfaX/04+BuMWjnq6PKOyNm5Ed5v/ZP71C9Q8iSVk=";
+            };
+          };
+        };
       });
+
+      # CertiRocq from the `certirocq` input with the table export patched in,
+      # built against the dependency set above: the build inputs, the Rocq
+      # version and the install layout are whatever the nixpkgs expression
+      # decided, and only the source moves.
+      #
+      # The source goes in through `version`, as the attribute form whose
+      # `fetcher` hands back the flake input, rather than through
+      # `overrideAttrs` on `src`. Two reasons. The nixpkgs expression derives
+      # its `defaultVersion` from `metarocq-erasure-plugin.version` and knows
+      # only `1.5.1-9.1`, so with MetaRocq moved to the branch head that
+      # lookup falls off the end and yields `broken` -- which `overrideAttrs`
+      # on `src` alone cannot undo, and the package then refuses to evaluate.
+      # Passing a `version` skips the lookup. And `mkCoqDerivation` builds
+      # `name` from the version it is given, so the store path reads
+      # `coq9.1-CertiRocq-wasm-export-table-546dd8a8`: a module that exports
+      # the table never shares a name with a released one that does not, which
+      # is the confusion this repo exists to avoid.
+      #
+      # The phases need two corrections on top of that, both because the
+      # nixpkgs expression describes the release's tree and `main`'s is
+      # different. They are not guesses: CertiRocq carries its own package in
+      # `.nix/coq-overlays/CertiRocq/default.nix`, which is what its CI
+      # builds `main` with, and this is where the two differ.
+      #
+      #   * `python3`. `main`'s top-level Makefile generates the two plugin
+      #     manifests with `plugins/manifests/generate.py`, and the rule fires
+      #     during the build because it depends on
+      #     `theories/Extraction/extraction.vo`, which the build has just
+      #     made. The release had no such step, so the nixpkgs expression
+      #     brings only clang and `make plugins` would die on `python3: not
+      #     found` after the whole of `theories` had compiled.
+      #   * the plugin directories. `main` moved them to `plugins/plugin` and
+      #     `plugins/cplugin`; the nixpkgs `installPhase` still installs from
+      #     `plugin` and `cplugin`, which do not exist, so it fails there --
+      #     after an hour of compiling, at the last step.
+      #
+      # `installPhase` is written out rather than rewritten from the old one,
+      # so the next layout change is a build failure naming the directory it
+      # cannot find, not a quiet install of fewer files than intended.
+      #
+      # Deliberately *not* copied from that overlay: `coqprime`, which it
+      # propagates and nothing under `theories` or `libraries` imports at this
+      # revision, and the `metarocq` meta-package, where the erasure and
+      # safechecker plugins the nixpkgs expression already names are enough --
+      # nothing imports `MetaRocq.Quotation` or `MetaRocq.Translations`. Both
+      # would only add build time; if `main` starts needing them, it says so
+      # by failing.
+      certirocqFor = pkgs:
+        let
+          scope = rocqPkgs pkgs;
+        in
+        (scope.CertiRocq.override {
+          version = {
+            version = "wasm-export-table-546dd8a8";
+            fetcher = _: certirocq;
+          };
+        }).overrideAttrs (old: {
+          nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.python3 ];
+
+          installPhase = ''
+            runHook preInstall
+
+            OUTDIR=$out/lib/coq/${scope.coq.coq-version}/user-contrib
+
+            DST=$OUTDIR/CertiRocq/Plugin/runtime make -C runtime install
+            COQLIBINSTALL=$OUTDIR make -C theories install
+            COQLIBINSTALL=$OUTDIR make -C libraries install
+            COQLIBINSTALL=$OUTDIR COQPLUGININSTALL=$OCAMLFIND_DESTDIR \
+              make -C plugins/plugin install
+            COQLIBINSTALL=$OUTDIR COQPLUGININSTALL=$OCAMLFIND_DESTDIR \
+              make -C plugins/cplugin install
+
+            runHook postInstall
+          '';
+        });
 
       # The component toolchain. wasm-tools does the embed/new steps and
       # binaryen supplies wasm-merge; both come from the pin above, so they are
@@ -136,8 +280,8 @@
       };
     in {
       packages = forAllSystems (pkgs: rec {
-        certirocq = certirocqFor pkgs;               # 0.9.1+9.1 + the table export
-        metarocq = (rocqPkgs pkgs).metarocq;          # 1.5.1-9.1
+        certirocq = certirocqFor pkgs;               # main + the table export (546dd8a8)
+        metarocq = (rocqPkgs pkgs).metarocq;          # 9.1 branch at 51b14e4b
         compcert = (rocqPkgs pkgs).compcert;          # 3.17
 
         componentize-formal = bindgenFor pkgs;

@@ -326,39 +326,87 @@ make the linked module differ from the module the backend proved correct.
 Taking it out means no `patch-table` subcommand has to exist, and the
 generated build rules link against the backend's own bytes.
 
-**Which CertiRocq.** The released `0.9.1+9.1` that nixpkgs packages does not
-export the table, so `flake.nix` does not use it: a separate `certirocq` flake
-input pins `womeier/certirocq` at `wasm-export-table` (`c54e78d6`), which adds
-the export and discharges the extra `ET_table` obligation the instantiation
-proof then carries in `LambdaANF_to_Wasm_instantiation.v` --- eleven lines
-across the two files, with nothing admitted. Only `src` is overridden, so
-MetaRocq, CompCert and WasmCert-Coq still come from the nixpkgs pin and stay
-cache hits; CertiRocq itself is the one local build.
+**Which CertiRocq.** `womeier/certirocq` at `wasm-export-table`, pinned to its
+head `546dd8a8`. No CertiRocq exports the table --- not the released
+`0.9.1+9.1` nixpkgs packages, and not upstream `main`, whose export list at
+`LambdaANF_to_Wasm.v:568` still ends at `MED_mem`. The branch is upstream
+`main` (`943b52ae`) plus one commit: eleven lines across
+`LambdaANF_to_Wasm.v` and `LambdaANF_to_Wasm_instantiation.v`, adding the
+`MED_table 0%N` entry and discharging the extra `ET_table` obligation the
+instantiation proof then carries, with nothing admitted. `rocq c` re-checks
+that obligation on every build, so a rebase that invalidates the proof fails
+the build rather than quietly losing it.
 
-**Unverified, and there is reason to doubt it.** The branch sits on CertiRocq
-`main`, 349 commits past the `v0.9.1+9.1` release nixpkgs packages, and nothing
-has compiled it against the dependency set the nixpkgs pin supplies. Four
-things say it will not:
+Pinned by revision, not by branch name: a branch pin follows the next rebase
+by itself, which is how a tree that compiled yesterday stops compiling with
+nothing in `flake.nix` having changed. Bumping it is a one-line edit plus
+`nix flake lock`, and the revision in the store path says which one is
+installed.
 
-- `rocq dep` on the branch warns `library EImplementLazyForce is required from
-  root MetaRocq.Erasure and has not been found in the loadpath`, and the pinned
-  `metarocq-erasure-1.5.1-9.1` has `EImplementBox` but no
-  `EImplementLazyForce`. Only `metarocq-erasure-dev` does.
-- the branch's `rocq-certirocq.opam` wants `coq-wasm >= 2.2.1`; the pin supplies
-  `wasm-2.2.0`. The release wanted exactly `2.2.0`.
-- CertiRocq's own `.nix/config.nix` bundle pins
-  `metarocq.override.version = "9.1"` and `wasmcert.override.version = "v2.2.1"`,
-  so upstream CI does not build `main` against the released MetaRocq either.
-- the nixpkgs derivation is the release's, so its `propagatedBuildInputs` are
-  `wasm-2.2.0`, `compcert-3.17`, `coq-ext-lib-0.13.1` and MetaRocq `1.5.1-9.1`.
+Rebased onto `main` rather than onto the release, because the release is 349
+commits back and carries the old WasmCert and MetaRocq bounds with it.
 
-Two ways out, neither taken. **Rebase the export commit onto the release**:
-the eleven lines touch `LambdaANF_to_Wasm.v` and
-`LambdaANF_to_Wasm_instantiation.v`, both of which exist at `v0.9.1+9.1`, and
-pinning a release-based branch keeps every dependency a cache hit and CertiRocq
-the one local build. Or **follow CertiRocq's own bundle**, which means building
-MetaRocq dev and WasmCert-Coq 2.2.1 locally -- hours, and it breaks what
-`checks/substitutable.py` exists to protect. The first is the one to try.
+**What that costs.** Two dependencies move past the nixpkgs pin, and both
+become local builds:
+
+- **WasmCert-Coq 2.2.1**, because `rocq-certirocq.opam:40` wants
+  `coq-wasm >= 2.2.1` and means it: `CodegenWasm/LambdaANF_to_Wasm_utils.v:1173`
+  uses `write_bytes_gen_preserve_length`, which 2.2.1 adds at
+  `Wasm/type_preservation.v:678` and 2.2.0 does not have anywhere. Against the
+  pin's 2.2.0 the compile stops there --- `The variable
+  write_bytes_gen_preserve_length was not found in the current environment`.
+  The pin's `wasmcert` expression has no `release."2.2.1"`, so the flake
+  supplies the `v2.2.1` tag and its hash in the attribute form `meta-fetch`
+  accepts. Cheap: 2.2.1 wants nothing newer than the pin has, and it built
+  against it unpatched.
+- **MetaRocq at the head of its `9.1` branch** (`51b14e4b`), because
+  `Compiler/metarocq_pipeline.v:19` and `Compiler/correctness.v:36` import
+  `MetaRocq.Erasure.EImplementLazyForce`, which exists in no release ---
+  searching every output of the pinned 1.5.1-9.1 set (`erasure`,
+  `erasure-plugin`, `safechecker`, `pcuic`, `template-pcuic`) finds
+  `EImplementBox` and nothing else. The branch head has
+  `erasure/theories/EImplementLazyForce.v`, and satisfies everything the pin
+  provides: `rocq-core >= 9.1.0 & < 9.2` against 9.1.1, `rocq-equations >=
+  1.3.1` against 1.3.1+9.1, `rocq-stdlib` 9.x, `coq-ext-lib >= 0.12` against
+  0.13.1. Expensive: it is MetaRocq from source, hours, and it is in no cache
+  this flake can reach. Both spellings were tried against
+  `metarocq.cachix.org` and `coq-community.cachix.org` --- the revision pin
+  and upstream's own branch-name pin, which yields the `-dev` store names
+  their CI pushes --- and both miss, because upstream builds MetaRocq through
+  coq-nix-toolbox's overlays rather than this nixpkgs revision's expression.
+
+**And this tree is not the release's tree.** The nixpkgs expression
+describes `0.9.1+9.1`, so two of its phases are wrong for `main`, and both
+would fail only after the whole of `theories` had compiled: the top-level
+Makefile now generates the plugin manifests with
+`plugins/manifests/generate.py`, which needs a `python3` the expression does
+not bring, and the plugins moved to `plugins/plugin` and `plugins/cplugin`,
+which its `installPhase` does not know. `flake.nix` corrects exactly those
+two, following CertiRocq's own
+`.nix/coq-overlays/CertiRocq/default.nix` --- the package its CI builds `main`
+with --- and deliberately does not follow that overlay's `coqprime` or its
+`metarocq` meta-package, neither of which anything under `theories` or
+`libraries` imports at this revision.
+
+Pinned by revision, not by branch name, in both cases. `version = "9.1"` is
+what CertiRocq's `.nix/config.nix` writes, and it makes `meta-fetch` fetch the
+branch archive with no hash at all: impure, and it follows the branch, so two
+runs a day apart compile different MetaRocqs under one store name.
+
+The consequence is that `checks/substitutable.py` can no longer speak for
+MetaRocq, which is the build it existed to protect. It now checks what is left
+--- CompCert, and the inputs MetaRocq itself is built from, which are the pin
+drifting if they ever stop being hits --- and says in its docstring what it
+gave up.
+
+**Not yet compiled end to end.** Every gap above is closed with evidence ---
+the WasmCert lemma, the MetaRocq module, the two phases --- and MetaRocq
+itself built here clean, which was the long pole. But no CertiRocq has
+finished compiling against this set yet, so the dependency choices are
+justified rather than demonstrated. The first full `nix build .#certirocq`
+settles it, and `nix flake check` after it is the harder test: `smoke`,
+`generated` and `representation` measure the emitted module, and `main` is
+349 commits of backend work past what those fixtures were written against.
 
 **This is still an assumption about the CertiRocq being compiled against**,
 not something the generator can check at run time, so it is checked where
@@ -790,8 +838,8 @@ Three things to verify rather than assume:
 
 3. **What `peregrine wasm` emits.** Same backend, different revision: Peregrine
    pins [`peregrine-project/certirocq#a8dc26fe`](https://github.com/peregrine-project/peregrine-tool/pull/101)
-   where this repo pins the 0.9.1+9.1 release. Two revisions agree until they
-   don't, and [`checks/representation.py`](checks/representation.py) is the
+   where this repo pins CertiRocq `main` at `943b52ae`. Two revisions agree
+   until they don't, and [`checks/representation.py`](checks/representation.py) is the
    instrument — point it at a Peregrine-built module. Needs no generator work.
 
 Peregrine's Lean frontend supports no string literals, floats or arrays, which

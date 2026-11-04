@@ -4,14 +4,24 @@
 flake.nix pins a nixpkgs revision chosen so CertiRocq's dependencies are the
 exact store paths coq-community CI has already pushed to its cache. If that
 stops being true -- an upstream cache garbage-collects, a pin drifts -- nothing
-breaks loudly. `nix develop` just starts compiling MetaRocq, for hours, on
-someone's laptop. This turns that into a failure in seconds.
+breaks loudly. `nix develop` just starts compiling Rocq and its libraries, for
+hours, on someone's laptop, on top of the hours this tree already asks for on
+purpose. This turns that into a failure in seconds.
 
-CertiRocq itself is the deliberate exception: it is built from the `certirocq`
-flake input rather than taken from nixpkgs, because the adapter needs the
-function-table export no release has (TODO.md#table-export). So it is in no
-cache by construction and is not checked here. What is checked is everything
-underneath it -- MetaRocq is the multi-hour build, and it is still a hit.
+Three things are built locally on purpose, and this check gave up ground to
+each of them (TODO.md#table-export): CertiRocq, because the adapter needs a
+function-table export no release has; WasmCert-Coq, because CertiRocq `main`
+needs 2.2.1 and the pin carries 2.2.0; and MetaRocq, because `main` imports a
+module that exists only on MetaRocq's `9.1` branch. The last one hurts --
+MetaRocq is the multi-hour build this check was written for, and no cache has
+it built against this pin.
+
+So what is checked is what is left: CompCert, and the *inputs* MetaRocq is
+built from -- Rocq itself, Equations, the standard library, the OCaml
+toolchain. Those are what a drifted pin would silently start rebuilding, and
+they are still hits. It is a weaker guarantee than before and worth
+restoring: an upstream CertiRocq that exports the table would retire all
+three exceptions at once.
 
 `--max-jobs 0` forbids local building, so any path that must be built rather
 than fetched fails the run. It cannot be pointed at a dev shell directly:
@@ -29,9 +39,23 @@ import argparse
 import subprocess
 import sys
 
-# Flake attributes whose closures must come from a cache. Not `certirocq`: see
-# the module docstring -- it is built from a branch on purpose.
-PACKAGES = ["metarocq", "compcert"]
+# Flake attributes whose whole closure must come from a cache. Not `certirocq`
+# and no longer `metarocq`: see the module docstring -- both are built here on
+# purpose.
+PACKAGES = ["compcert"]
+
+# Flake attributes that are built locally, but whose inputs must still be
+# hits. This is what is left of the MetaRocq guarantee: the pin can no longer
+# be checked by fetching MetaRocq, so it is checked by fetching everything
+# MetaRocq is compiled against.
+#
+# `metarocq.utils`, not `metarocq`: the meta-package's inputs are the other
+# ten MetaRocq derivations, which are local builds too, so asking about them
+# only re-reports the exception. `utils` sits at the bottom of the chain and
+# depends on no other MetaRocq package, so its inputs are exactly the
+# toolchain underneath -- Rocq, Equations, the standard library, ExtLib,
+# zarith -- which is the thing a drifted pin would rebuild.
+LOCAL_PACKAGES = ["metarocq.utils"]
 
 # Dev shells whose dependencies must come from a cache. The shells themselves
 # are excluded, per the module docstring. `default` is excluded too, because
@@ -83,6 +107,38 @@ def shell_inputs(system: str, name: str) -> list[str]:
     return inputs
 
 
+def package_inputs(attr: str) -> list[str]:
+    """The derivations a locally-built package is compiled against.
+
+    Its own sources are dropped: they are this repo's pins -- a CertiRocq
+    revision, a MetaRocq revision -- so they are in no cache by construction
+    and would fail the run for a reason that says nothing about nixpkgs.
+    """
+    drv = nix("eval", "--raw", f".#{attr}.drvPath")
+    refs = subprocess.run(
+        ["nix-store", "--query", "--references", drv],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if refs.returncode != 0:
+        raise SystemExit(
+            f"substitutable: could not read the inputs of {attr}:\n{refs.stderr}"
+        )
+
+    inputs = [
+        f"{line}^*"
+        for line in refs.stdout.split()
+        if line.endswith(".drv") and not line.endswith("-source.drv")
+    ]
+    if not inputs:
+        raise SystemExit(
+            f"substitutable: {attr} reported no input derivations, so this "
+            "check would pass without testing anything."
+        )
+    return inputs
+
+
 def realise(what: str, installables: list[str]) -> bool:
     """Fetch these without building anything. True if that was possible."""
     print(f"substitutable: {what} ({len(installables)} derivation(s))", flush=True)
@@ -113,6 +169,8 @@ def main() -> int:
     ok = realise(
         "the Rocq package set", [f".#{name}" for name in PACKAGES]
     )
+    for attr in LOCAL_PACKAGES:
+        ok &= realise(f"what {attr} is built against", package_inputs(attr))
     for shell in SHELLS:
         ok &= realise(
             f"the inputs of devShells.{system}.{shell}",
@@ -124,8 +182,9 @@ def main() -> int:
             "\nSomething that should be a cache hit would be built locally.\n"
             "If an upstream cache was garbage-collected, either rebuild and push\n"
             "it, or move the nixpkgs pin to a revision that is still cached --\n"
-            "see the comment on `inputs.nixpkgs` in flake.nix. CertiRocq itself\n"
-            "is expected to be built locally and is not what this reports.",
+            "see the comment on `inputs.nixpkgs` in flake.nix. CertiRocq,\n"
+            "MetaRocq and WasmCert-Coq are expected to be built locally and are\n"
+            "not what this reports.",
             file=sys.stderr,
         )
         return 1
