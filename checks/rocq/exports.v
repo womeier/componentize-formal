@@ -18,4 +18,4 @@ From Stdlib Require Import Uint63.
 
 Definition plus1 (n : int) := (n + 1)%uint63.
 
-CertiRocq Compile Wasm -file "conformance" plus1.
+CertiRocq Compile Wasm --output "conformance" plus1.

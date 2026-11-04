@@ -87,7 +87,7 @@ pub fn extraction(plan: &Plan) -> String {
         ),
         "component.toml.".into(),
         String::new(),
-        "`-file` is the name the generated build rules expect the backend to".into(),
+        "`--output` is the name the generated build rules expect the backend to".into(),
         "write, so changing it here alone breaks the build rather than".into(),
         "renaming anything.".into(),
     ]);
@@ -101,7 +101,7 @@ pub fn extraction(plan: &Plan) -> String {
     };
     writeln!(
         out,
-        "\nCertiRocq Compile Wasm {flags}-file \"{}\" {}.{}.",
+        "\nCertiRocq Compile Wasm {flags}--output \"{}\" {}.{}.",
         b.wasm_name, b.impl_module, plan.export.rocq_name
     )
     .unwrap();

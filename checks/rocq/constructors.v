@@ -42,13 +42,13 @@ Definition to_m_last  (b : bool) := m_last.
 Definition to_m_boxed_a (b : bool) := m_boxed_a b.
 Definition to_m_boxed_b (b : bool) := m_boxed_b b.
 
-CertiRocq Compile Wasm -file "ctor-true"  to_true.
-CertiRocq Compile Wasm -file "ctor-false" to_false.
-CertiRocq Compile Wasm -file "ctor-red"   to_red.
-CertiRocq Compile Wasm -file "ctor-green" to_green.
-CertiRocq Compile Wasm -file "ctor-blue"  to_blue.
+CertiRocq Compile Wasm --output "ctor-true"  to_true.
+CertiRocq Compile Wasm --output "ctor-false" to_false.
+CertiRocq Compile Wasm --output "ctor-red"   to_red.
+CertiRocq Compile Wasm --output "ctor-green" to_green.
+CertiRocq Compile Wasm --output "ctor-blue"  to_blue.
 
-CertiRocq Compile Wasm -file "ctor-mixed-first"   to_m_first.
-CertiRocq Compile Wasm -file "ctor-mixed-last"    to_m_last.
-CertiRocq Compile Wasm -file "ctor-mixed-boxed-a" to_m_boxed_a.
-CertiRocq Compile Wasm -file "ctor-mixed-boxed-b" to_m_boxed_b.
+CertiRocq Compile Wasm --output "ctor-mixed-first"   to_m_first.
+CertiRocq Compile Wasm --output "ctor-mixed-last"    to_m_last.
+CertiRocq Compile Wasm --output "ctor-mixed-boxed-a" to_m_boxed_a.
+CertiRocq Compile Wasm --output "ctor-mixed-boxed-b" to_m_boxed_b.

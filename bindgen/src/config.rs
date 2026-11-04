@@ -43,7 +43,7 @@ pub struct ImplConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct WasmConfig {
-    /// The `-file` argument, so the backend writes `<name>.wasm`.
+    /// The `--output` argument, so the backend writes `<name>.wasm`.
     pub name: String,
 }
 
@@ -125,7 +125,7 @@ fn default_out_dir() -> PathBuf {
 impl Config {
     /// The config a bare `--wit PATH` implies: every default, and that path.
     ///
-    /// `generate` needs more than the WIT file says -- a `-file` name, which
+    /// `generate` needs more than the WIT file says -- a `--output` name, which
     /// module to compile -- so working without a `component.toml` means
     /// working against its defaults rather than against nothing.
     pub fn for_wit(wit: PathBuf) -> Self {

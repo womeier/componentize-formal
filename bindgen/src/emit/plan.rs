@@ -176,7 +176,7 @@ pub struct Export {
 /// File names the generated build rules tie together.
 #[derive(Debug, Clone)]
 pub struct Build {
-    /// `-file` for `CertiRocq Compile Wasm`, so the backend writes
+    /// `--output` for `CertiRocq Compile Wasm`, so the backend writes
     /// `<wasm_name>.wasm`.
     pub wasm_name: String,
     /// Rocq library names, which are the file stems.

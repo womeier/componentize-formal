@@ -3,4 +3,4 @@
 From CertiRocq.Plugin Require Import CertiRocq.
 Require Import impl.
 
-CertiRocq Compile Wasm -file "rocq-negb" Impl.negb.
+CertiRocq Compile Wasm --output "rocq-negb" Impl.negb.
