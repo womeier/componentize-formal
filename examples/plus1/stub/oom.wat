@@ -10,7 +10,7 @@
   (global $mem_ptr (export "mem_ptr") (mut i32) (i32.const 65512))
   (global $result (export "result") (mut i32) (i32.const 0))
   (global $out_of_mem (export "out_of_mem") (mut i32) (i32.const 0))
-  (table (export "__indirect_function_table") 2 funcref)
+  (table (export "table") 2 funcref)
 
   (func (export "main_function")
     (global.set $out_of_mem (i32.const 1)))

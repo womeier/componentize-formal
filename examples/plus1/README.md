@@ -79,21 +79,28 @@ What the stub pins is the adapter's half — the lowering, the discriminants, an
 that both checks fire. It is **not** evidence about the backend. That needs
 `make run`, which compiles `impl.v` with the real CertiRocq:
 
+The Rocq side compiles today. The link step needs the backend to export its
+function table, which the released CertiRocq does not do, so `flake.nix`
+builds CertiRocq from a branch that adds it
+([`TODO.md#table-export`](../../TODO.md#table-export)) — a build this example
+has not been run against yet. Against a CertiRocq *without* the export, the
+Makefile stops with the reason instead of at link time with a missing symbol:
+
 ```console
 $ make run
 rocq c interface.v
 rocq c impl.v
 rocq c extraction.v
-error: this CertiRocq does not export __indirect_function_table,
-       which the adapter links the compiled closures through.
-       Move the nixpkgs pin forward -- see TODO.md#table-export.
-       `make run-stub` exercises the adapter without it.
+error: this CertiRocq does not export its function table as
+       "table", which the adapter links the compiled closures
+       through. Move the `certirocq` flake input forward -- see
+       TODO.md#table-export. `make run-stub` exercises the
+       adapter without it.
 ```
 
-The Rocq side compiles today; the link step waits on a backend that exports the
-table ([`TODO.md#table-export`](../../TODO.md#table-export)). That is what
-layer 2 of [representation conformance](../../TODO.md#representation) needs,
-and this example is the shape it will take.
+Getting past that step is what layer 2 of
+[representation conformance](../../TODO.md#representation) needs, and this
+example is the shape it will take.
 
 ## Known gaps
 

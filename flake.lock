@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "certirocq": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1793807877,
+        "narHash": "sha256-K+t/H77n/l9eyzROiOI7cADEkHyulGFQ2LzzrmrlC+A=",
+        "owner": "womeier",
+        "repo": "certirocq",
+        "rev": "c54e78d6506898ccc1dd9fdcfd6074ea5cd0bedf",
+        "type": "github"
+      },
+      "original": {
+        "owner": "womeier",
+        "ref": "wasm-export-table",
+        "repo": "certirocq",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1785156508,
@@ -18,6 +35,7 @@
     },
     "root": {
       "inputs": {
+        "certirocq": "certirocq",
         "nixpkgs": "nixpkgs"
       }
     }

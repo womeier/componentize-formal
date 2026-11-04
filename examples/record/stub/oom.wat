@@ -15,7 +15,7 @@
   (global $mem_ptr (export "mem_ptr") (mut i32) (i32.const 65472))
   (global $result (export "result") (mut i32) (i32.const 0))
   (global $out_of_mem (export "out_of_mem") (mut i32) (i32.const 0))
-  (table (export "__indirect_function_table") 2 funcref)
+  (table (export "table") 2 funcref)
   (elem (i32.const 1) $grow_body)
 
 

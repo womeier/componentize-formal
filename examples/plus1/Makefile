@@ -33,11 +33,12 @@ $(WASM_NAME).wasm: extraction.v impl.vo
 # with a message about a missing symbol.
 $(WASM_NAME).comp.wasm: $(WASM_NAME).wasm adapter.wasm wit/world.wit
 	@wasm-tools parse $(WASM_NAME).wasm -t \
-	  | grep -q '(export "__indirect_function_table"' \
-	  || { echo 'error: this CertiRocq does not export __indirect_function_table,'; \
-	       echo '       which the adapter links the compiled closures through.'; \
-	       echo '       Move the nixpkgs pin forward -- see TODO.md#table-export.'; \
-	       echo '       `make run-stub` exercises the adapter without it.'; \
+	  | grep -q '(export "table"' \
+	  || { echo 'error: this CertiRocq does not export its function table as'; \
+	       echo '       "table", which the adapter links the compiled closures'; \
+	       echo '       through. Move the `certirocq` flake input forward -- see'; \
+	       echo '       TODO.md#table-export. `make run-stub` exercises the'; \
+	       echo '       adapter without it.'; \
 	       exit 1; }
 	wasm-merge $(WASM_NAME).wasm rocq adapter.wasm adapter $(MERGE_OPTS) -o merged.wasm
 	wasm-tools component embed wit merged.wasm -o embedded.wasm

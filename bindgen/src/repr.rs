@@ -16,7 +16,8 @@
 
 /// Exports the backend puts on the module it emits.
 ///
-/// `LambdaANF_to_Wasm.v:553-570`. The table is among them, so the build links
+/// The `exports` list in `LambdaANF_to_Wasm.v:555-572`: every export function
+/// by its own name, then these. The table is among them, so the build links
 /// the adapter against the backend's own output and rewrites nothing --- see
 /// `TODO.md#table-export`.
 pub mod exports {
@@ -26,7 +27,13 @@ pub mod exports {
     pub const OUT_OF_MEM: &str = "out_of_mem";
     pub const MAIN_FUNCTION: &str = "main_function";
     /// What the adapter calls the compiled closures through.
-    pub const TABLE: &str = "__indirect_function_table";
+    ///
+    /// Plain `table`, not LLVM's `__indirect_function_table`: the backend
+    /// names its exports after what they are (`memory`, `result`, `mem_ptr`),
+    /// and the entry added in `LambdaANF_to_Wasm.v:570` follows that. The
+    /// adapter's import has to spell it the same way or `wasm-merge` leaves
+    /// the import unresolved.
+    pub const TABLE: &str = "table";
 }
 
 /// A nullary constructor is an immediate, not a pointer.

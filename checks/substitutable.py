@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Assert the heavy things are fetched from a cache, never built locally.
 
-flake.nix pins a nixpkgs revision chosen so CertiRocq and its dependencies are
-the exact store paths coq-community CI has already pushed to its cache. If that
+flake.nix pins a nixpkgs revision chosen so CertiRocq's dependencies are the
+exact store paths coq-community CI has already pushed to its cache. If that
 stops being true -- an upstream cache garbage-collects, a pin drifts -- nothing
 breaks loudly. `nix develop` just starts compiling MetaRocq, for hours, on
 someone's laptop. This turns that into a failure in seconds.
+
+CertiRocq itself is the deliberate exception: it is built from the `certirocq`
+flake input rather than taken from nixpkgs, because the adapter needs the
+function-table export no release has (TODO.md#table-export). So it is in no
+cache by construction and is not checked here. What is checked is everything
+underneath it -- MetaRocq is the multi-hour build, and it is still a hit.
 
 `--max-jobs 0` forbids local building, so any path that must be built rather
 than fetched fails the run. It cannot be pointed at a dev shell directly:
@@ -23,12 +29,15 @@ import argparse
 import subprocess
 import sys
 
-# Flake attributes whose closures must come from a cache.
-PACKAGES = ["certirocq", "metarocq", "compcert"]
+# Flake attributes whose closures must come from a cache. Not `certirocq`: see
+# the module docstring -- it is built from a branch on purpose.
+PACKAGES = ["metarocq", "compcert"]
 
 # Dev shells whose dependencies must come from a cache. The shells themselves
-# are excluded, per the module docstring.
-SHELLS = ["default", "bindgen"]
+# are excluded, per the module docstring. `default` is excluded too, because
+# it carries the locally-built CertiRocq; `bindgen` is the shell this check
+# can speak for, and the packages above cover what `default` adds.
+SHELLS = ["bindgen"]
 
 
 def nix(*args: str) -> str:
@@ -115,7 +124,8 @@ def main() -> int:
             "\nSomething that should be a cache hit would be built locally.\n"
             "If an upstream cache was garbage-collected, either rebuild and push\n"
             "it, or move the nixpkgs pin to a revision that is still cached --\n"
-            "see the comment on `inputs.nixpkgs` in flake.nix.",
+            "see the comment on `inputs.nixpkgs` in flake.nix. CertiRocq itself\n"
+            "is expected to be built locally and is not what this reports.",
             file=sys.stderr,
         )
         return 1

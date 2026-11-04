@@ -21,7 +21,7 @@
   (import "rocq" "result" (global $result (mut i32)))
   (import "rocq" "out_of_mem" (global $out_of_mem (mut i32)))
   (import "rocq" "main_function" (func $main_function))
-  (import "rocq" "__indirect_function_table" (table $funcs 1 funcref))
+  (import "rocq" "table" (table $funcs 1 funcref))
 
   ;; How the backend calls a closure body: (env, arg) with the result left in
   ;; the `result` global. repr.rs `CLOSURE_*`.

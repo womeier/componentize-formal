@@ -312,10 +312,12 @@ compose. Not a near-term option, but the reason `repr.rs` is one file.
 
 ### <a id="table-export"></a>The backend exports the table
 
-The adapter reaches the compiled closures through
-`__indirect_function_table`, and the backend exports it beside `memory` and
-`main_function` --- the `exports` list in `LambdaANF_to_Wasm.v:553-570`, where
-a `MED_table 0%N` entry sits next to the `MED_mem 0%N` one.
+The adapter reaches the compiled closures through the backend's own function
+table, so the generated module has to export it. The name is plain `table`,
+matching how the backend names the rest of its exports (`memory`, `result`,
+`mem_ptr`) rather than LLVM's `__indirect_function_table` --- the `exports`
+list in `LambdaANF_to_Wasm.v:555-572`, where a `MED_table 0%N` entry now sits
+next to the `MED_mem 0%N` one.
 
 Earlier it did not, and the build patched the export in between `rocq c` and
 `wasm-merge` with a `sed` line --- the one step of the pipeline that rewrote
@@ -324,12 +326,47 @@ make the linked module differ from the module the backend proved correct.
 Taking it out means no `patch-table` subcommand has to exist, and the
 generated build rules link against the backend's own bytes.
 
-**This is an assumption about the CertiRocq being compiled against**, not
-something the generator can check at run time, so it is checked where
+**Which CertiRocq.** The released `0.9.1+9.1` that nixpkgs packages does not
+export the table, so `flake.nix` does not use it: a separate `certirocq` flake
+input pins `womeier/certirocq` at `wasm-export-table` (`c54e78d6`), which adds
+the export and discharges the extra `ET_table` obligation the instantiation
+proof then carries in `LambdaANF_to_Wasm_instantiation.v` --- eleven lines
+across the two files, with nothing admitted. Only `src` is overridden, so
+MetaRocq, CompCert and WasmCert-Coq still come from the nixpkgs pin and stay
+cache hits; CertiRocq itself is the one local build.
+
+**Unverified, and there is reason to doubt it.** The branch sits on CertiRocq
+`main`, 349 commits past the `v0.9.1+9.1` release nixpkgs packages, and nothing
+has compiled it against the dependency set the nixpkgs pin supplies. Four
+things say it will not:
+
+- `rocq dep` on the branch warns `library EImplementLazyForce is required from
+  root MetaRocq.Erasure and has not been found in the loadpath`, and the pinned
+  `metarocq-erasure-1.5.1-9.1` has `EImplementBox` but no
+  `EImplementLazyForce`. Only `metarocq-erasure-dev` does.
+- the branch's `rocq-certirocq.opam` wants `coq-wasm >= 2.2.1`; the pin supplies
+  `wasm-2.2.0`. The release wanted exactly `2.2.0`.
+- CertiRocq's own `.nix/config.nix` bundle pins
+  `metarocq.override.version = "9.1"` and `wasmcert.override.version = "v2.2.1"`,
+  so upstream CI does not build `main` against the released MetaRocq either.
+- the nixpkgs derivation is the release's, so its `propagatedBuildInputs` are
+  `wasm-2.2.0`, `compcert-3.17`, `coq-ext-lib-0.13.1` and MetaRocq `1.5.1-9.1`.
+
+Two ways out, neither taken. **Rebase the export commit onto the release**:
+the eleven lines touch `LambdaANF_to_Wasm.v` and
+`LambdaANF_to_Wasm_instantiation.v`, both of which exist at `v0.9.1+9.1`, and
+pinning a release-based branch keeps every dependency a cache hit and CertiRocq
+the one local build. Or **follow CertiRocq's own bundle**, which means building
+MetaRocq dev and WasmCert-Coq 2.2.1 locally -- hours, and it breaks what
+`checks/substitutable.py` exists to protect. The first is the one to try.
+
+**This is still an assumption about the CertiRocq being compiled against**,
+not something the generator can check at run time, so it is checked where
 assumptions about the backend belong: `checks/representation.py` reads the
-emitted module and fails if the table is not exported, naming the pin as the
-thing to move. A CertiRocq predating the export cannot be used --- the adapter
-has nothing to link through.
+emitted module and fails if the table is not exported, naming the input as the
+thing to move, and the generated build rules guard the link step the same way.
+A CertiRocq predating the export cannot be used --- the adapter has nothing to
+link through.
 
 ### <a id="extract-inductives"></a>A remapping the generator cannot see
 

@@ -9,6 +9,28 @@
     # coq-community.cachix.org -- nothing has to be built locally.
     # Do not bump this to nixpkgs-unstable: any later revision rebuilds MetaRocq.
     nixpkgs.url = "github:NixOS/nixpkgs/fb9c9907f7655e040a5fedc979c80d386d7e7813";
+
+    # CertiRocq itself comes from here rather than from nixpkgs, because the
+    # adapter needs the generated module to export its function table and the
+    # released 0.9.1+9.1 that nixpkgs pins does not -- see
+    # TODO.md#table-export. The branch adds the export to
+    # `LambdaANF_to_Wasm.v` and discharges the extra `ET_table` obligation in
+    # `LambdaANF_to_Wasm_instantiation.v`, so the instantiation proof still
+    # goes through; it is not admitted around.
+    #
+    # Everything *else* about the Rocq package set still comes from the
+    # nixpkgs pin above, so MetaRocq, CompCert and WasmCert-Coq stay cache
+    # hits. Only CertiRocq is built locally, which is the price of the export.
+    #
+    # NOT YET BUILT. The branch is CertiRocq `main` plus one commit, 349
+    # commits past the release nixpkgs packages, and `main` wants a newer
+    # MetaRocq (`EImplementLazyForce`) and WasmCert-Coq 2.2.1 than this pin
+    # has. TODO.md#table-export lists the evidence and the fix: rebase the
+    # export commit onto `v0.9.1+9.1`.
+    certirocq = {
+      url = "github:womeier/certirocq/wasm-export-table";
+      flake = false;
+    };
   };
 
   # Substituters holding the prebuilt Rocq package set for the pin above.
@@ -25,7 +47,7 @@
     ];
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, certirocq }:
     let
       lib = nixpkgs.lib;
 
@@ -45,6 +67,24 @@
       # At this pin the Rocq package set still lives under `coqPackages`
       # (`rocqPackages` there has no CertiRocq attribute).
       rocqPkgs = pkgs: pkgs.coqPackages;
+
+      # CertiRocq from the `certirocq` input, built against the dependency set
+      # the nixpkgs pin supplies. Only `src` is overridden: the build inputs,
+      # the Rocq version and the install layout are whatever nixpkgs decided
+      # for 0.9.1+9.1, which is what keeps this to one local build instead of
+      # a rebuild of the whole Rocq set.
+      #
+      # `name`, not `version`: mkCoqDerivation sets `name` itself, so
+      # overriding `version` alone leaves the store path reading
+      # `coq9.1-CertiRocq-0.9.1+9.1` -- indistinguishable from the released
+      # package that does *not* export the table. Two different modules under
+      # one name is exactly the confusion this repo exists to avoid, so the
+      # branch is in the name.
+      certirocqFor = pkgs: (rocqPkgs pkgs).CertiRocq.overrideAttrs (old: {
+        name = "${old.name}-wasm-export-table";
+        version = "${old.version}-wasm-export-table";
+        src = certirocq;
+      });
 
       # The component toolchain. wasm-tools does the embed/new steps and
       # binaryen supplies wasm-merge; both come from the pin above, so they are
@@ -96,7 +136,7 @@
       };
     in {
       packages = forAllSystems (pkgs: rec {
-        certirocq = (rocqPkgs pkgs).CertiRocq;        # 0.9.1+9.1, Rocq 9.1.1
+        certirocq = certirocqFor pkgs;               # 0.9.1+9.1 + the table export
         metarocq = (rocqPkgs pkgs).metarocq;          # 1.5.1-9.1
         compcert = (rocqPkgs pkgs).compcert;          # 3.17
 
@@ -151,7 +191,7 @@
           {
             nativeBuildInputs = [
               (rocqPkgs pkgs).coq
-              (rocqPkgs pkgs).CertiRocq
+              (certirocqFor pkgs)
               pkgs.python3
               pkgs.wasm-tools
             ];
@@ -214,7 +254,7 @@
         default = pkgs.mkShell {
           packages = [
             (rocqPkgs pkgs).coq
-            (rocqPkgs pkgs).CertiRocq
+            (certirocqFor pkgs)
             pkgs.rust-analyzer
           ] ++ rustTools pkgs ++ componentTools pkgs ++ scriptTools pkgs;
         };

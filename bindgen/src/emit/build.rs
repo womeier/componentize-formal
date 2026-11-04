@@ -90,10 +90,10 @@ pub fn makefile(plan: &Plan) -> String {
          $(COMPONENT): $(WASM_NAME).wasm adapter.wasm $(WIT_FILES)\n\
          \t@wasm-tools parse $(WASM_NAME).wasm -t \\\n\
          \t  | grep -q '(export \"{table}\"' \\\n\
-         \t  || {{ echo 'error: this CertiRocq does not export {table},'; \\\n\
-         \t       echo '       which the adapter links the compiled closures through.'; \\\n\
-         \t       echo '       Move the CertiRocq you build against forward -- see'; \\\n\
-         \t       echo '       TODO.md#table-export.'; \\\n\
+         \t  || {{ echo 'error: this CertiRocq does not export its function table'; \\\n\
+         \t       echo '       as \"{table}\", which the adapter links the compiled'; \\\n\
+         \t       echo '       closures through. Move the CertiRocq you build against'; \\\n\
+         \t       echo '       forward -- see TODO.md#table-export.'; \\\n\
          \t       exit 1; }}\n\
          \twasm-merge $(WASM_NAME).wasm {backend} adapter.wasm {adapter} $(MERGE_OPTS) -o merged.wasm\n\
          \twasm-tools component embed $(WIT) merged.wasm -o embedded.wasm\n\

@@ -394,8 +394,9 @@ def check(names: dict[str, str], wat: str) -> list[str]:
                 problems.append(
                     f'the backend does not export "{names[const]}", which the '
                     "adapter links the compiled closures through. A CertiRocq "
-                    "predating that export cannot be used: move the nixpkgs "
-                    "pin forward -- see TODO.md#table-export"
+                    "predating that export cannot be used: move the "
+                    "`certirocq` flake input forward -- see "
+                    "TODO.md#table-export"
                 )
             else:
                 problems.append(

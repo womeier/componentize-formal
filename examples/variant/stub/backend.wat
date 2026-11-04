@@ -1,5 +1,5 @@
 ;; Stands in for the module CertiRocq emits, so the adapter can be exercised
-;; before the nixpkgs pin carries a backend that exports the table
+;; without building the CertiRocq that exports the table
 ;; (TODO.md#table-export). It presents the same surface -- the five exports in
 ;; repr.rs plus the table -- and the same value representation: a primitive
 ;; int boxed as a pointer to 8 bytes, a nullary constructor as the immediate
@@ -26,7 +26,7 @@
   (global $mem_ptr (export "mem_ptr") (mut i32) (i32.const 0))
   (global $result (export "result") (mut i32) (i32.const 0))
   (global $out_of_mem (export "out_of_mem") (mut i32) (i32.const 0))
-  (table (export "__indirect_function_table") 2 funcref)
+  (table (export "table") 2 funcref)
   (elem (i32.const 1) $add_byte_body)
 
   ;; The heap does not arrive zeroed in general: a module can carry data

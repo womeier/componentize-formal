@@ -98,7 +98,8 @@ A stub more forgiving than the thing it stands in for would carry an adapter
 that the real backend rejects.
 
 The Rocq half of `make run` therefore works today, and stops where `plus1`'s
-does:
+does — against a CertiRocq that does not export its function table, which is
+every release ([`TODO.md#table-export`](../../TODO.md#table-export)):
 
 ```console
 $ make run
@@ -106,10 +107,11 @@ rocq c interface.v
 rocq c impl.v
 rocq c extraction.v
 wasm-tools parse adapter.wat -o adapter.wasm
-error: this CertiRocq does not export __indirect_function_table,
-       which the adapter links the compiled closures through.
-       Move the nixpkgs pin forward -- see TODO.md#table-export.
-       `make run-stub` exercises the adapter without it.
+error: this CertiRocq does not export its function table as
+       "table", which the adapter links the compiled closures
+       through. Move the `certirocq` flake input forward -- see
+       TODO.md#table-export. `make run-stub` exercises the
+       adapter without it.
 ```
 
 ## The files
