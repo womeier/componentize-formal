@@ -44,7 +44,7 @@ BACKEND_EXPORTS = [
     "TABLE",
 ]
 
-# `CertiRocq Compile Wasm -file "conformance"` in the .v decides this.
+# `CertiRocq Compile Wasm --output "conformance"` in the .v decides this.
 MODULE_STEM = "conformance"
 
 # One module per constructor, from checks/rocq/constructors.v. Each is a
@@ -73,7 +73,7 @@ MEASURED_TARGETS = {
 }
 
 CONSTRUCTORS = [
-    # (-file stem, repr.rs constant, or the ordinal to expect)
+    # (--output stem, repr.rs constant, or the ordinal to expect)
     ("ctor-false", "BOOL_FALSE", None),
     ("ctor-true", "BOOL_TRUE", None),
     ("ctor-red", None, 0),
@@ -113,6 +113,15 @@ MEASURED_ARRAY = re.compile(
 FUNC_START = re.compile(r"^  \(func \(;(?P<index>\d+);\)", re.M)
 EXPORT_FUNC = re.compile(r'\(export "(?P<name>[^"]*)" \(func (?P<index>\d+)\)\)')
 I32_CONST = re.compile(r"^\s*i32\.const (?P<value>-?\d+)\s*$", re.M)
+# The store of the code pointer into the closure `main_function` allocates:
+# `global.get 1` is the record's address, `i32.const 4 / i32.add` its second
+# word, and the constant stored there is the function the closure calls. The
+# backend's elem section maps function indices to table indices one to one, so
+# that constant is both.
+CLOSURE_CODE_PTR = re.compile(
+    r"global\.get 1\n\s*i32\.const 4\n\s*i32\.add\n"
+    r"\s*i32\.const (?P<index>\d+)\n\s*i32\.store"
+)
 EXPORT = re.compile(r'\(export "(?P<name>[^"]*)"')
 IMPORT = re.compile(r'^\s*\(import ', re.M)
 MEMORY = re.compile(r'^\s*\(memory \(;\d+;\)', re.M)
@@ -159,7 +168,7 @@ def rocq_filename(source: Path) -> str:
 def compile_wasm(rocq_source: Path, workdir: Path, stems: list[str] | None = None) -> dict[str, Path]:
     """`rocq c` the file and return the .wasm files the plugin wrote beside it.
 
-    Keyed by the `-file` name in the .v, which is what ties a module back to
+    Keyed by the `--output` name in the .v, which is what ties a module back to
     the definition it came from.
     """
     stems = stems or [MODULE_STEM]
@@ -182,7 +191,7 @@ def compile_wasm(rocq_source: Path, workdir: Path, stems: list[str] | None = Non
         if not wasm.is_file():
             produced = sorted(p.name for p in workdir.iterdir())
             raise Mismatch(
-                f"`rocq c` produced no {wasm.name}; the -file names in "
+                f"`rocq c` produced no {wasm.name}; the --output names in "
                 f"{rocq_source.name} and the stems here must agree. "
                 f"The build directory holds: {', '.join(produced)}"
             )
@@ -200,47 +209,80 @@ def disassemble(wasm: Path) -> str:
     ).stdout
 
 
-def returned_immediate(names: dict[str, str], wat: str, stem: str) -> int:
-    """The constant a one-constructor function leaves in `result`.
-
-    The module holds exactly two functions: `main_function` and the wrapper
-    for the definition. The wrapper of a function that ignores its argument
-    and returns a nullary constructor contains that constructor's immediate
-    and nothing else, so there is no need to run anything.
-    """
-    exported = {m.group("name"): int(m.group("index")) for m in EXPORT_FUNC.finditer(wat)}
-    wrappers = [
-        index
-        for name, index in exported.items()
-        if name != names["MAIN_FUNCTION"]
-    ]
-    if len(wrappers) != 1:
-        raise Mismatch(
-            f"{stem}: expected one exported function besides "
-            f'"{names["MAIN_FUNCTION"]}", found {len(wrappers)}: '
-            f"{', '.join(sorted(exported))}. The backend's export shape "
-            "changed and this check can no longer tell which function is the "
-            "wrapper."
-        )
-
+def func_bounds(wat: str, stem: str) -> dict[int, tuple[int, int]]:
+    """Where each function body starts and ends in the disassembly."""
     starts = [(int(m.group("index")), m.start()) for m in FUNC_START.finditer(wat)]
     if not starts:
         raise Mismatch(
             f"{stem}: found no function bodies, so the pattern this check "
             "reads them with no longer matches wasm-tools' output"
         )
-    bounds = {
+    return {
         index: (start, starts[i + 1][1] if i + 1 < len(starts) else len(wat))
         for i, (index, start) in enumerate(starts)
     }
-    start, end = bounds[wrappers[0]]
+
+
+def returned_immediate(names: dict[str, str], wat: str, stem: str) -> int:
+    """The constant a one-constructor function leaves in `result`.
+
+    `main_function` does not compute the definition; it allocates the closure
+    for it and leaves that in `result`. The body sits in a separate function,
+    reached through the closure's code pointer. The backend exports that
+    function, but it exports every other function the pipeline generated too
+    -- `reccall_wrapper`, `f_case_known` and friends, under mangled names --
+    so the export list does not say which one belongs to the definition. The
+    code pointer does, and following it is exactly what the adapter does at
+    runtime.
+
+    The wrapper of a function that ignores its argument and returns a nullary
+    constructor contains that constructor's immediate and nothing else, so
+    there is no need to run anything.
+    """
+    exported = {m.group("name"): int(m.group("index")) for m in EXPORT_FUNC.finditer(wat)}
+    main = exported.get(names["MAIN_FUNCTION"])
+    if main is None:
+        raise Mismatch(
+            f'{stem}: the module exports no function called '
+            f'"{names["MAIN_FUNCTION"]}", so the closure this check reads the '
+            f"definition's body from cannot be found. It exports: "
+            f"{', '.join(sorted(exported)) or '(nothing)'}"
+        )
+
+    bounds = func_bounds(wat, stem)
+    if main not in bounds:
+        raise Mismatch(
+            f'{stem}: "{names["MAIN_FUNCTION"]}" is exported as function '
+            f"{main}, which has no body in the disassembly"
+        )
+
+    start, end = bounds[main]
+    pointers = [int(m.group("index")) for m in CLOSURE_CODE_PTR.finditer(wat[start:end])]
+    if len(pointers) != 1:
+        raise Mismatch(
+            f'{stem}: "{names["MAIN_FUNCTION"]}" stores {len(pointers)} code '
+            f"pointers ({pointers}), not one. It used to allocate exactly one "
+            "closure -- the definition's -- and this check reads the "
+            "definition's body through it; the codegen changed and this check "
+            "has to be rewritten to follow it."
+        )
+
+    wrapper = pointers[0]
+    if wrapper not in bounds:
+        raise Mismatch(
+            f"{stem}: the closure in \"{names['RESULT']}\" points at function "
+            f"{wrapper}, which has no body in the disassembly"
+        )
+
+    start, end = bounds[wrapper]
     constants = [int(m.group("value")) for m in I32_CONST.finditer(wat[start:end])]
     if len(constants) != 1:
         raise Mismatch(
-            f"{stem}: the wrapper holds {len(constants)} i32 constants "
-            f"({constants}), not one. A function returning a nullary "
-            "constructor used to compile to exactly that constant; the "
-            "codegen changed and this check has to be rewritten to follow it."
+            f"{stem}: the wrapper (function {wrapper}) holds "
+            f"{len(constants)} i32 constants ({constants}), not one. A "
+            "function returning a nullary constructor used to compile to "
+            "exactly that constant; the codegen changed and this check has to "
+            "be rewritten to follow it."
         )
     return constants[0]
 
@@ -284,7 +326,7 @@ def boxed_ordinals(wats: dict[str, str], stems: list[str]) -> dict[str, int]:
 
 
 def measured_values(path: Path) -> dict[str, int]:
-    """What bindgen/src/measured.rs records, keyed by -file stem."""
+    """What bindgen/src/measured.rs records, keyed by --output stem."""
     text = path.read_text()
     scalars = {m.group("name"): int(m.group("value")) for m in MEASURED_SCALAR.finditer(text)}
     arrays = {
