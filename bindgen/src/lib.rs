@@ -2,6 +2,7 @@
 //! glue from a WIT world.
 
 pub mod config;
+pub mod emit;
 pub mod measured;
 pub mod repr;
 pub mod support;
@@ -94,9 +95,27 @@ fn error_cases(resolve: &Resolve, pkg: &PackageName) -> Result<Vec<String>> {
     }
 }
 
+/// The case names of an error enum reached through however many aliases, in
+/// declaration order.
+///
+/// The gate has already established that this is the shipped `error` by
+/// identity, so this is how the emitters learn which discriminant each failure
+/// gets: by name, from the type the component will actually declare, rather
+/// than from a constant here that could disagree with it.
+pub fn error_case_names(resolve: &Resolve, ty: wit_parser::Type) -> Result<Vec<String>> {
+    let wit_parser::Type::Id(id) = ty else {
+        bail!("the error half is a primitive type, not an enum")
+    };
+    match &resolve.types[id].kind {
+        TypeDefKind::Type(inner) => error_case_names(resolve, *inner),
+        TypeDefKind::Enum(e) => Ok(e.cases.iter().map(|c| c.name.clone()).collect()),
+        kind => bail!("the error half is {}, not an enum", kind.as_str()),
+    }
+}
+
 /// Load a WIT file or directory and pick the world to work on.
 ///
-/// Two layouts have to work, and they want opposite things. A bare world file
+/// Two layouts have to work and they want opposite things. A bare world file
 /// needs the shipped `certirocq:abi` pushed under it, so
 /// `use certirocq:abi/errors@0.1.0.{error}` resolves with nothing vendored. A
 /// directory laid out for `wasm-tools component embed` already carries the
@@ -104,33 +123,101 @@ fn error_cases(resolve: &Resolve, pkg: &PackageName) -> Result<Vec<String>> {
 /// build reads --- and pushing ours as well is a duplicate package, which
 /// `wit-parser` panics on rather than reporting.
 ///
-/// So the self-contained tree is tried first and the shipped package is a
-/// fallback, which also means a vendored copy always wins over ours: it is the
-/// one the component will be built against.
+/// Which one it is, is therefore decided by *looking* rather than by trying
+/// and falling back. Trying first reads well until the world file has a typo
+/// in it: the first attempt fails for that unrelated reason, the fallback
+/// pushes our package on top of the vendored one, and a misplaced comma comes
+/// out as a panic from inside `wit-parser`.
 pub fn resolve_world(wit: &Path, world: Option<&str>) -> Result<(Resolve, WorldId)> {
+    let vendored = target_declares_abi(wit)?;
+
     let mut resolve = Resolve::new();
-    let pkg = match resolve.push_path(wit) {
-        Ok((pkg, _files)) => {
-            // Trusted for its name by the gate, so held to its contents here:
-            // the same version with different cases would mean the adapter
-            // writing one discriminant while the component declares another.
-            check_vendored_abi(&resolve, wit)?;
-            pkg
-        }
-        Err(_) => {
-            resolve = Resolve::new();
-            resolve
-                .push_group(parse_abi()?)
-                .context("loading the shipped certirocq:abi package")?;
-            let (pkg, _files) = resolve.push_path(wit).map_err(|e| abi_hint(e, wit))?;
-            pkg
-        }
-    };
+    if !vendored {
+        resolve
+            .push_group(parse_abi()?)
+            .context("loading the shipped certirocq:abi package")?;
+    }
+    let (pkg, _files) = resolve.push_path(wit).map_err(|e| abi_hint(e, wit))?;
+
+    // Trusted for its name by the gate, so held to its contents here: the same
+    // version with different cases would mean the adapter writing one
+    // discriminant while the component declares another.
+    match vendored {
+        true => check_vendored_abi(&resolve, wit)?,
+        // We supplied the package, but the directory the build embeds may
+        // still carry its own copy: resolving a *file* does not read the
+        // `deps/` beside it, and `component embed` does.
+        false => check_abi_beside(wit)?,
+    }
 
     let world = resolve
         .select_world(&[pkg], world)
         .context("selecting a world")?;
     Ok((resolve, world))
+}
+
+/// Does the path we are about to resolve supply `certirocq:abi` itself?
+///
+/// A directory brings its `deps/` with it. A single file does not --
+/// `Resolve::push_path` on a file reads that file alone -- which is why a file
+/// and the directory it sits in can resolve the same world against different
+/// copies of the package, and why [`check_abi_beside`] exists.
+fn target_declares_abi(wit: &Path) -> Result<bool> {
+    if wit.is_dir() {
+        return Ok(vendored_abi(wit)?.is_some());
+    }
+    // A world file could declare the package itself, which is unusual but
+    // perfectly valid, and would collide just the same.
+    let text =
+        std::fs::read_to_string(wit).with_context(|| format!("reading {}", wit.display()))?;
+    Ok(declares_abi(wit, &text))
+}
+
+/// The vendored copy of the shipped package in a WIT tree, as its path and
+/// text.
+///
+/// Found by parsing each candidate's package declaration rather than by
+/// resolving the tree: a tree that does not resolve must not be reported as
+/// having no vendored package, because the answer decides whether ours gets
+/// pushed on top of theirs.
+fn vendored_abi(dir: &Path) -> Result<Option<(std::path::PathBuf, String)>> {
+    let deps = dir.join("deps");
+    if !deps.is_dir() {
+        return Ok(None);
+    }
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(&deps).with_context(|| format!("reading {}", deps.display()))? {
+        let path = entry?.path();
+        if path.is_dir() {
+            for entry in
+                std::fs::read_dir(&path).with_context(|| format!("reading {}", path.display()))?
+            {
+                candidates.push(entry?.path());
+            }
+        } else {
+            candidates.push(path);
+        }
+    }
+    for path in candidates {
+        if path.extension().is_some_and(|e| e == "wit") {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            if declares_abi(&path, &text) {
+                return Ok(Some((path, text)));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Is this file the shipped package, name and version?
+///
+/// A file that does not parse is not it: the one that follows will report the
+/// parse error against the user's own file, which is a better answer than
+/// anything guessed from here.
+fn declares_abi(path: &Path, text: &str) -> bool {
+    UnresolvedPackageGroup::parse(path, text)
+        .is_ok_and(|group| &group.main.name == abi_package_name())
 }
 
 /// Hold a vendored `certirocq:abi` of the shipped version to the shipped
@@ -141,17 +228,59 @@ fn check_vendored_abi(resolve: &Resolve, wit: &Path) -> Result<()> {
     if !resolve.package_names.contains_key(shipped) {
         return Ok(());
     }
-    let found = error_cases(resolve, shipped)
-        .with_context(|| format!("reading the `{shipped}` vendored in {}", wit.display()))?;
+    compare_abi_cases(
+        &error_cases(resolve, shipped)
+            .with_context(|| format!("reading the `{shipped}` vendored in {}", wit.display()))?,
+        wit,
+    )
+}
+
+/// The same check for the copy on disk beside a world file.
+///
+/// `wasm-tools component embed` resolves the world from the directory, so that
+/// copy is what the component is built against even when this tool resolved
+/// the world from one file. Without this, a vendored package whose cases had
+/// been reordered would pass the gate and produce a component that reports the
+/// wrong error.
+fn check_abi_beside(wit: &Path) -> Result<()> {
+    let dir = match wit.is_dir() {
+        true => wit.to_path_buf(),
+        false => match wit.parent().filter(|p| !p.as_os_str().is_empty()) {
+            Some(parent) => parent.to_path_buf(),
+            None => Path::new(".").to_path_buf(),
+        },
+    };
+    let Some((path, text)) = vendored_abi(&dir)? else {
+        return Ok(());
+    };
+
+    let mut resolve = Resolve::new();
+    let group = UnresolvedPackageGroup::parse(&path, &text)
+        .map_err(|(_, e)| e)
+        .with_context(|| format!("parsing the `{}` in {}", abi_package_name(), path.display()))?;
+    resolve.push_group(group).with_context(|| {
+        format!(
+            "the `{}` in {} does not resolve on its own; the shipped package \
+             depends on nothing, so a copy that does is a different package. See \
+             TODO.md#abi-package-version",
+            abi_package_name(),
+            path.display()
+        )
+    })?;
+    compare_abi_cases(&error_cases(&resolve, abi_package_name())?, &path)
+}
+
+fn compare_abi_cases(found: &[String], where_: &Path) -> Result<()> {
     let expected = abi_error_cases();
     if found != expected {
         bail!(
-            "the `{shipped}` in {} declares `{}.{}` as {:?}, but this generator \
+            "the `{}` in {} declares `{}.{}` as {:?}, but this generator \
              ships {:?}. An enum's case order is its canonical-ABI discriminant, \
              so these are different types under the same version -- either vendor \
              the shipped package unchanged or give yours its own version. See \
              TODO.md#abi-package-version",
-            wit.display(),
+            abi_package_name(),
+            where_.display(),
             ABI_INTERFACE,
             ABI_ERROR,
             found,

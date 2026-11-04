@@ -22,8 +22,8 @@ run: $(WASM_NAME).comp.wasm
 %.vo: %.v
 	rocq c $<
 
-# impl.v implements the generated Module Type, so Iface.vo comes first.
-impl.vo: Iface.vo
+# impl.v implements the generated Module Type, so interface.vo comes first.
+impl.vo: interface.vo
 
 $(WASM_NAME).wasm: extraction.v impl.vo
 	rocq c extraction.v

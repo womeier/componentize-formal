@@ -3,3 +3,5 @@
 /result-*
 # cargo build artefacts
 /bindgen/target/
+# Python bytecode from running the checks/ scripts by hand
+__pycache__/

@@ -393,3 +393,74 @@ fn a_vendored_abi_package_must_match_the_shipped_one() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// `wasm-tools component embed` resolves a world from the *directory*, and
+/// `Resolve::push_path` on a single file does not even read the `deps/` beside
+/// it. So the two can see different copies of `certirocq:abi`, and the copy
+/// that matters is the one on disk: without this check a world passed as a file
+/// would be gated against the shipped package and built against a vendored one
+/// whose cases had moved, producing a component that reports the wrong error.
+#[test]
+fn a_world_file_is_held_to_the_package_beside_it() {
+    let dir = std::env::temp_dir().join(format!("bindgen-beside-{}", std::process::id()));
+    let deps = dir.join("deps/certirocq-abi");
+    std::fs::create_dir_all(&deps).unwrap();
+    std::fs::write(
+        deps.join("errors.wit"),
+        "package certirocq:abi@0.1.0;\n\
+         interface errors {\n\
+         \x20 enum error { out-of-range, out-of-memory }\n\
+         }\n",
+    )
+    .unwrap();
+    let world = dir.join("world.wit");
+    std::fs::write(
+        &world,
+        "package local:demo;\n\
+         world w {\n\
+         \x20 use certirocq:abi/errors@0.1.0.{error};\n\
+         \x20 export plus1: func(val: u64) -> result<u64, error>;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let err = format!(
+        "{:#}",
+        resolve_world(&world, None).expect_err("the skewed copy beside it must be caught")
+    );
+    assert!(err.contains("out-of-range"), "{err}");
+    assert!(err.contains("TODO.md#abi-package-version"), "{err}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A tree that vendors the package and has an ordinary mistake in its world
+/// file must report the mistake.
+///
+/// This used to be a panic from inside `wit-parser`. Resolution tried the tree
+/// first and pushed the shipped package as a fallback, so the parse error sent
+/// it down the fallback, where pushing our copy on top of the vendored one is
+/// a duplicate package -- which that crate panics on rather than returning. A
+/// misplaced comma came out as a crash.
+#[test]
+fn a_mistake_in_a_vendored_tree_is_reported_not_panicked() {
+    let dir = std::env::temp_dir().join(format!("bindgen-typo-{}", std::process::id()));
+    let deps = dir.join("deps/certirocq-abi");
+    std::fs::create_dir_all(&deps).unwrap();
+    std::fs::write(deps.join("errors.wit"), componentize_formal::ABI_WIT).unwrap();
+    std::fs::write(
+        dir.join("world.wit"),
+        "package local:demo;\n\
+         world w {\n\
+         \x20 use certirocq:abi/errors@0.1.0.{error};\n\
+         \x20 export plus1 func(val: u64) -> result<u64, error>;\n\
+         }\n",
+    )
+    .unwrap();
+
+    let err = format!(
+        "{:#}",
+        resolve_world(&dir, None).expect_err("a syntax error must be an error")
+    );
+    assert!(err.contains("expected ';'"), "{err}");
+    std::fs::remove_dir_all(&dir).ok();
+}

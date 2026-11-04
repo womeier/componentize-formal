@@ -33,7 +33,7 @@ invent a failure. `plus1(2⁶³)` is a failure, because that `u64` has no
 | --- | --- |
 | [`wit/world.wit`](wit/world.wit) | you — the interface comes first |
 | [`wit/deps/certirocq-abi/`](wit/deps/certirocq-abi) | vendored, because `wasm-tools component embed` reads the package off disk |
-| [`Iface.v`](Iface.v) | generated — the world as a `Module Type` |
+| [`interface.v`](interface.v) | generated — the world as a `Module Type` |
 | [`impl.v`](impl.v) | **you** — the only file that is yours |
 | [`extraction.v`](extraction.v) | generated — the `CertiRocq Compile Wasm` call |
 | [`adapter.wat`](adapter.wat) | generated — the canonical-ABI glue |
@@ -41,7 +41,7 @@ invent a failure. `plus1(2⁶³)` is a failure, because that `u64` has no
 | [`component.toml`](component.toml) | you — what the WIT file cannot say |
 | [`stub/`](stub) | neither; see below |
 
-`Iface.v` asks for `plus1 : int -> int`. The `error` enum is nowhere in it,
+`interface.v` asks for `plus1 : int -> int`. The `error` enum is nowhere in it,
 because a Rocq function cannot run out of memory in its own type and nothing in
 Rocq knows a value has to fit a WIT width. Both failures belong to the adapter,
 which is why every export returns `result<T, error>`.
@@ -81,7 +81,7 @@ that both checks fire. It is **not** evidence about the backend. That needs
 
 ```console
 $ make run
-rocq c Iface.v
+rocq c interface.v
 rocq c impl.v
 rocq c extraction.v
 error: this CertiRocq does not export __indirect_function_table,

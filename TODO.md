@@ -153,7 +153,7 @@ obligation to compile time:
 
 ```coq
 Definition u32 := { x : int | (x <? 2 ^ 32)%uint63 = true }.
-Parameter narrow : int -> u32.   (* generated into Iface.v *)
+Parameter narrow : int -> u32.   (* generated into interface.v *)
 ```
 
 Then there is no `out-of-range` on the result side at all — it is ruled out
@@ -236,6 +236,29 @@ against expectations written out in full. It links against the examples'
 `stub/`, so it needs no Rocq and runs on every push; what holds the stub to
 the real backend is 1b above, and layer 2 below.
 
+**1d — the generator emits that.** `checks.generated`
+([`checks/generated.py`](checks/generated.py)) generates for each example's
+world and requires the result to be the hand-written adapter *token for token*,
+comments and line breaks excepted, then assembles the generated adapter against
+the same `stub/` and requires the same answers. The examples are never
+regenerated: they were written, built and run before the emitter existed, which
+is the only reason they are evidence about it. It also generates for every world
+in [`bindgen/tests/wit/good`](bindgen/tests/wit/good) and parses the result,
+since those fixtures are the rest of the shapes the gate accepts, and runs
+`make -n` over the generated build rules.
+
+The first thing this check found was the emitter passing a boxed `u64` argument
+by value instead of by address --- a component that assembles, runs, and
+answers nonsense.
+
+What it does not cover is the `enum` branch of the emitter, because no example
+under `examples/` has an `enum` parameter: the two that exist take a `u64` and a
+`bool`. That branch has been built and run by hand --- a generated world with
+`enum colour { red, green, blue }` answers `next(red) = ok(green)`,
+`next(green) = ok(blue)`, `next(blue) = ok(red)` against a stub --- but by hand
+is not a check, and `checks.generated` only parses the adapter it generates for
+the `enum` fixtures. A third example closes it.
+
 **2 — the backend's behaviour, phase 1.** The rest needs the module to *run*:
 one case per representation, each a Rocq definition plus a world through the
 whole pipeline — `rocq c`, `wasm-merge`, `component embed`,
@@ -289,6 +312,41 @@ assumptions about the backend belong: `checks/representation.py` reads the
 emitted module and fails if the table is not exported, naming the pin as the
 thing to move. A CertiRocq predating the export cannot be used --- the adapter
 has nothing to link through.
+
+### <a id="extract-inductives"></a>A remapping the generator cannot see
+
+The constructor immediates the adapter contains come from declaration order,
+and `bool`'s come from the one documented exception to it. Both are
+*configurable*. `CertiRocq.Plugin.Loader` --- the three-line file that
+`From CertiRocq.Plugin Require Import CertiRocq` loads --- sets the exception
+up with
+
+```coq
+CertiRocq Extract Inductives [ bool => "bool" [ 1 0 ] ].
+```
+
+and that command is available to anyone. A world's `enum colour` compiled in a
+file that also says `CertiRocq Extract Inductives [ colour => "colour" [ 2 1 0 ] ]`
+would permute the ordinals under an adapter built from declaration order, and
+every call would return the wrong case while type-checking and running cleanly.
+
+Nothing on the WIT side can detect this: the remapping lives in the Rocq file
+the user writes, which the generator does not read. Three options, none taken
+yet:
+
+- **Say so.** The generated `interface.v` could carry the warning, which costs
+  nothing and relies on someone reading it.
+- **Check the output.** The immediates are visible in the compiled module, so
+  the build rules could read the constructor constants back and compare them
+  against what the adapter assumes --- the same measurement
+  [`checks/representation.py`](checks/representation.py) already makes, applied
+  to the user's own types rather than to fixtures. This is the real answer.
+- **Own the file.** `extraction.v` is generated, so it could be the only place
+  the command may appear and the generator could refuse any other use of it.
+  That means parsing Rocq, which is a bad trade.
+
+The middle one is worth doing when the first generated adapter for a world with
+its own inductive gets built for real.
 
 ---
 
@@ -579,7 +637,7 @@ Agda, which is [out of scope](#agda)) through λ□ (LambdaBox) into CertiRocq's
 and `wasm-merge`.
 
 Almost nothing in the generator is about Rocq, which is what makes this cheap:
-only `Iface.v` (a Lean signature in place of a `Module Type`) and `extraction.v`
+only `interface.v` (a Lean signature in place of a `Module Type`) and `extraction.v`
 (a `peregrine wasm prog.ast` invocation rather than `CertiRocq Compile Wasm`).
 The adapter, the build rules and the gate are all shared. Three operations
 differ per frontend — render a type, render the interface file, drive

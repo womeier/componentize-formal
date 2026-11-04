@@ -7,12 +7,12 @@
 //! than scattered through the emitter as literals.
 //!
 //! The unit tests below pin the formulas against the values in the
-//! hand-written adapters in `testing/examples/component/{plus1,negb}`. That
-//! catches a mistake in *this* file, not the backend changing underneath it.
-//! For that, `checks/representation.py` compiles a function with the real
-//! CertiRocq and holds the constants below that are visible in the emitted
-//! module -- the export names, the type indices -- to what it finds. The ones
-//! that need the module to *run* wait on phase 1 (`TODO.md#representation`).
+//! hand-written adapters under `examples/`. That catches a mistake in *this*
+//! file, not the backend changing underneath it. For that,
+//! `checks/representation.py` compiles functions with the real CertiRocq and
+//! holds every constant below that a compiled module shows -- the export
+//! names, the type indices, the constructor immediates -- to what it finds.
+//! What is left needs the module to *run*: `TODO.md#representation`.
 
 /// Exports the backend puts on the module it emits.
 ///
@@ -57,6 +57,22 @@ pub const fn immediate_ordinal(value: u32) -> u32 {
 /// `i32.const 1`, while `red | green | blue` compiles to `1`, `3`, `5` in
 /// that order -- and so does any other two-constructor inductive, which is
 /// what makes `bool` the exception and not the rule.
+///
+/// The measurement has a source, found afterwards. `CertiRocq.Plugin.Loader`
+/// -- the file `From CertiRocq.Plugin Require Import CertiRocq` loads -- is
+/// three lines long, and one of them is
+///
+/// ```text
+/// CertiRocq Extract Inductives [ bool => "bool" [ 1 0 ] ].
+/// ```
+///
+/// `[ 1 0 ]` is the remapping: constructor 0 (`true`) takes ordinal 1 and
+/// constructor 1 (`false`) takes ordinal 0. So the swap is a configured
+/// remapping rather than something baked into the pipeline, which cuts two
+/// ways: it is stable, because it is written down; and the same command is
+/// available to anyone, so a remapping in *your* file would invalidate the
+/// immediates the generated adapter contains. Nothing can detect that from the
+/// WIT side -- see `TODO.md#extract-inductives`.
 ///
 /// Two consequences. The swap is upstream behaviour that can change, so
 /// `checks/representation.py` reads these two values back off a compiled
@@ -148,7 +164,7 @@ pub mod ordinal {
 mod tests {
     use super::*;
 
-    /// The values the hand-written `negb` adapter encodes by hand.
+    /// The values the hand-written `examples/negb` adapter encodes by hand.
     #[test]
     fn bools_match_the_handwritten_adapter() {
         assert_eq!(BOOL_FALSE, 1);
@@ -157,7 +173,7 @@ mod tests {
         assert_eq!(immediate_ordinal(BOOL_TRUE), 1);
     }
 
-    /// The offsets the hand-written `plus1` adapter encodes by hand.
+    /// The offsets the hand-written `examples/plus1` adapter encodes by hand.
     #[test]
     fn closure_layout_matches_the_handwritten_adapter() {
         assert_eq!(CLOSURE_FUNC_IDX_OFFSET, 4);

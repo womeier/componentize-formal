@@ -12,19 +12,21 @@ the component is verified end to end: the backend's compilation is proved
 correct, the canonical-ABI glue this tool generates is
 [trusted](TODO.md#verified-glue).
 
-Given `world.wit`, the generator will emit
+Given `world.wit`, the generator emits
 
-- `Iface.v` — a `Module Type` carrying the WIT signature as Rocq types, so Rocq
+- `interface.v` — a `Module Type` carrying the WIT signature as Rocq types, so Rocq
   checks your implementation against the interface at `rocq c` time;
 - `extraction.v` — the `CertiRocq Compile Wasm` invocation, with your flags;
 - `adapter.wat` — glue bridging the backend's value representation and the
   component model's canonical ABI;
-- build rules that run `wasm-merge`, then `wasm-tools component embed` and
-  `component new`.
+- a `Makefile` that runs `rocq c`, then `wasm-merge`, then `wasm-tools component
+  embed` and `component new`.
 
-Today only the support gate is implemented. It decides whether a world is
-within the subset the backend can honour and reports precisely what it cannot,
-pointing at the matching section of [`TODO.md`](TODO.md):
+You write one file: `impl.v`.
+
+Nothing is generated for a world the backend cannot honour. The support gate
+runs first, every time, and reports precisely what it turns away, pointing at
+the matching section of [`TODO.md`](TODO.md):
 
 ```
 $ nix develop
@@ -36,6 +38,25 @@ error[E-NO-CHANNEL]: a result type with no error channel is not supported
     memory, out of range (`val` >= 2^63)
   = see TODO.md#failure-channel
 ```
+
+Fix that, and `generate` writes the project:
+
+```
+$ componentize-formal generate --wit wit --out-dir .
+  interface.v                        the world as a Rocq Module Type
+  extraction.v                       the CertiRocq Compile Wasm invocation
+  adapter.wat                        canonical-ABI glue
+  Makefile                           build rules: rocq c, wasm-merge, component embed, component new
+  wit/deps/certirocq-abi/errors.wit  the shipped error enum, where `component embed` will look for it
+
+Write impl.v implementing `Module Type WrapperWorld`, then `make` in .
+```
+
+`impl.v` is yours and is never written. Everything else carries a
+`componentize-formal generate` line, and a file without one stops the run
+before anything at all is written — `--force` overwrites it anyway. The
+vendored error package is written only if it is missing, since it is an input
+to the component build rather than output.
 
 Correctness is the point — see [no silent failure](TODO.md#no-silent-failure).
 
@@ -66,7 +87,15 @@ use. Details in [`TODO.md#failure-channel`](TODO.md#failure-channel).
 | | Status |
 | --- | --- |
 | `check` — accept or reject a world, with reasons | **supported** |
-| `Iface.v`, `extraction.v`, `adapter.wat`, build rules | not yet — hand-written in [`examples/`](examples), which run |
+| `generate` — `interface.v`, `extraction.v`, `adapter.wat`, `Makefile` | **supported** |
+
+What holds `generate` to its word is that
+[`examples/`](examples) was written, built and run *before* the emitter
+existed: `checks.generated` regenerates each example's world and requires the
+result to be the hand-written adapter token for token, then assembles the
+generated one and requires the same answers from `wasmtime`. The first thing
+that check found was a boxed `u64` passed by value instead of by address — a
+component that assembles, runs, and answers nonsense.
 
 ## WIT feature support
 
@@ -78,7 +107,7 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | `bool` | **supported** | tagged immediate, `false`=1, `true`=3 |
-| `u64` | **supported** | Rocq's primitive 63-bit ints (`Uint63.int`); values ≥ 2⁶³ don't fit — warned at the position, guarded in the adapter |
+| `u64` | **supported** | Rocq's primitive 63-bit ints (`Uint63.int`); values ≥ 2⁶³ don't fit, so the adapter range-checks the argument and answers `err(out-of-range)` |
 | `u8`, `u16`, `u32` | [not supported](TODO.md#integer-widths) | a narrower width needs a range check on every lift |
 | `enum` | **supported** | all-nullary inductive, `2*ord+1` |
 | `result<T, error>` as the result | **required** | the [failure channel](TODO.md#failure-channel), on every export |
@@ -120,9 +149,11 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/`](bindgen) | the generator, Rust, on `wit-parser` |
 | [`bindgen/src/support.rs`](bindgen/src/support.rs) | the support gate |
 | [`bindgen/src/repr.rs`](bindgen/src/repr.rs) | CertiRocq's value representation, with sources |
+| [`bindgen/src/emit/plan.rs`](bindgen/src/emit/plan.rs) | everything the output depends on, decided once — the only part that can fail |
+| [`bindgen/src/emit/`](bindgen/src/emit) | the emitters: `rocq.rs`, `adapter.rs`, `build.rs`, each a pure function of the plan |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
-| [`examples/`](examples) | the whole pipeline for one export, hand-written in the shape generation has to emit: [`plus1`](examples/plus1) and [`negb`](examples/negb) |
+| [`examples/`](examples) | the whole pipeline for one export, hand-written before the emitter existed and so usable as evidence about it: [`plus1`](examples/plus1) and [`negb`](examples/negb) |
 | [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
@@ -144,8 +175,9 @@ so a green checkout is a green branch:
 | `abi-version` | `wit-parser`'s version must match the `wasm-tools` that ships, since they must compute the same canonical-ABI layout |
 | `representation` | compiles Rocq functions with the real CertiRocq and checks the emitted modules against every claim in `repr.rs`, including the constructor immediates |
 | `smoke` | assembles each example into a component and checks what `wasmtime` says it answers |
+| `generated` | generates for each example's world and requires the result to be the hand-written files token for token, then assembles the generated adapter and requires the same answers |
 
-The last three are Python scripts under [`checks/`](checks) and run standalone
+The last four are Python scripts under [`checks/`](checks) and run standalone
 in `nix develop` as well, which is often what you want while changing
 `repr.rs`. They guard against the same thing: a mismatch there does not break
 the build, it makes the adapter read the wrong bytes and return plausible

@@ -61,12 +61,18 @@
     ;; int. `(b << 1) | 1` turns the component's 0/1 into the backend's 1/3.
     ;;
     ;; That shift is this simple only because the CertiRocq pipeline swaps
-    ;; `bool`'s constructors to match OCaml's `false = 0, true = 1`; Rocq
-    ;; declares `true` first, so declaration order would have given the
-    ;; opposite pair and this would need to invert. See repr.rs BOOL_FALSE.
+    ;; `bool`'s constructors to match OCaml's `false = 0, true = 1`
+    ;; (`CertiRocq.Plugin.Loader`: `bool => "bool" [ 1 0 ]`); Rocq declares
+    ;; `true` first, so declaration order would have given the opposite pair
+    ;; and this would need to invert. See repr.rs BOOL_FALSE.
+    ;;
+    ;; The `i32.ne` is not redundant. The canonical ABI lifts any non-zero
+    ;; byte as `true`, so a caller may hand over a 2 -- and shifting that
+    ;; would name a third constructor `bool` has not got, which the Rocq side
+    ;; would then match on. Clamping first is what the ABI asks for.
     (call_indirect (type $closure)
       (i32.load offset=8 (local.get $closure))
-      (i32.or (i32.shl (local.get $b) (i32.const 1)) (i32.const 1))
+      (i32.or (i32.shl (i32.ne (local.get $b) (i32.const 0)) (i32.const 1)) (i32.const 1))
       (i32.load offset=4 (local.get $closure)))
 
     (if (global.get $out_of_mem)

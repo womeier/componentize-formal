@@ -110,7 +110,7 @@
       checks = forAllSystems (pkgs: let
         bindgen = bindgenFor pkgs;
       in {
-        # Building the package runs the 13 integration and 7 unit tests in the
+        # Building the package runs the 29 integration and 7 unit tests in the
         # sandbox, which is stricter than `cargo test` in a checkout: it has
         # caught files missing from `bindgenSrc` that the checkout still had.
         componentize-formal = bindgen;
@@ -161,6 +161,31 @@
               --constructor-source ${./checks/rocq/constructors.v} \
               --measured ${./bindgen/src/measured.rs} \
               --repr ${./bindgen/src/repr.rs}
+            touch $out
+          '';
+
+        # The generator against the hand-written examples: same code, then the
+        # same answers out of a component assembled from what it wrote. The
+        # examples are never regenerated -- they were written and run before
+        # the emitter existed, which is what makes them a reference.
+        #
+        # `${./checks}/generated.py` rather than `${./checks/generated.py}`
+        # because it imports the expectations from `smoke.py`, which has to be
+        # beside it in the store.
+        generated = pkgs.runCommand "generated"
+          {
+            nativeBuildInputs = [
+              pkgs.python3
+              pkgs.gnumake
+              pkgs.wasm-tools
+              pkgs.binaryen
+              pkgs.wasmtime
+            ];
+          } ''
+            python3 ${./checks}/generated.py \
+              --generator ${bindgen}/bin/componentize-formal \
+              --examples ${./examples} \
+              --fixtures ${./bindgen/tests/wit/good}
             touch $out
           '';
 

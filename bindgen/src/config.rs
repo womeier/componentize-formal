@@ -1,7 +1,3 @@
-//! (Fields consumed by the generator land in phase 1; the config shape is
-//! settled now so examples can be written against it.)
-#![allow(dead_code)]
-
 //! `component.toml`: everything the generator needs that does not come out of
 //! the WIT file itself.
 
@@ -21,6 +17,10 @@ pub struct Config {
     /// Required only when the package declares more than one world.
     #[serde(default)]
     pub world: Option<String>,
+    /// Where the generated files go. Defaults to the config's own directory,
+    /// and has to stay with `impl.v`: the generated `interface.v` is
+    /// `Require Import`ed by it and `extraction.v` requires `impl.v` back, so
+    /// Rocq wants all three on one load path.
     #[serde(default = "default_out_dir")]
     pub out_dir: PathBuf,
     #[serde(default, rename = "impl")]
@@ -119,10 +119,28 @@ impl Default for WasmConfig {
 }
 
 fn default_out_dir() -> PathBuf {
-    PathBuf::from("gen")
+    PathBuf::from(".")
 }
 
 impl Config {
+    /// The config a bare `--wit PATH` implies: every default, and that path.
+    ///
+    /// `generate` needs more than the WIT file says -- a `-file` name, which
+    /// module to compile -- so working without a `component.toml` means
+    /// working against its defaults rather than against nothing.
+    pub fn for_wit(wit: PathBuf) -> Self {
+        let out_dir = default_out_dir();
+        Config {
+            wit,
+            frontend: Frontend::default(),
+            world: None,
+            out_dir,
+            impl_: ImplConfig::default(),
+            wasm: WasmConfig::default(),
+            certirocq: CertiRocqConfig::default(),
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
