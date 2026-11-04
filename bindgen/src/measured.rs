@@ -21,3 +21,13 @@ pub const BOOL_TRUE: u32 = 3;
 /// The immediates of a three-constructor nullary inductive, in declaration
 /// order, which `bool` is the exception to.
 pub const NULLARY_ORDINALS: [u32; 3] = [1, 3, 5];
+
+/// `mixed := m_first | m_boxed_a _ | m_boxed_b _ | m_last`, which is where the
+/// two numbering schemes come apart: the immediates of its two *nullary*
+/// constructors, in declaration order. `m_last` is declaration index 3.
+pub const MIXED_NULLARY_IMMEDIATES: [u32; 2] = [1, 3];
+
+/// The same type's two *boxed* constructors: their ordinals, in declaration
+/// order. They reuse the numbers the nullary ones already have, and only the
+/// tag bit separates them --- see [`crate::repr::ordinal`].
+pub const MIXED_BOXED_ORDINALS: [u32; 2] = [0, 1];

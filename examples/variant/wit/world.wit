@@ -1,0 +1,19 @@
+package local:demo;
+
+world wrapper-world {
+    use certirocq:abi/errors@0.1.0.{error};
+
+    /// How many bytes something has, as far as the caller can tell.
+    variant byte-count {
+        /// Nothing is known.
+        unknown,
+        /// Exactly this many.
+        exactly(u64),
+        /// This many at least, and possibly more.
+        at-least(u64),
+        /// More than any `u64` can say.
+        too-big,
+    }
+
+    export add-byte: func(c: byte-count) -> result<byte-count, error>;
+}

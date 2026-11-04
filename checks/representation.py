@@ -66,6 +66,10 @@ MEASURED_TARGETS = {
     "ctor-red": ("NULLARY_ORDINALS", 0),
     "ctor-green": ("NULLARY_ORDINALS", 1),
     "ctor-blue": ("NULLARY_ORDINALS", 2),
+    "ctor-mixed-first": ("MIXED_NULLARY_IMMEDIATES", 0),
+    "ctor-mixed-last": ("MIXED_NULLARY_IMMEDIATES", 1),
+    "ctor-mixed-boxed-a": ("MIXED_BOXED_ORDINALS", 0),
+    "ctor-mixed-boxed-b": ("MIXED_BOXED_ORDINALS", 1),
 }
 
 CONSTRUCTORS = [
@@ -75,6 +79,19 @@ CONSTRUCTORS = [
     ("ctor-red", None, 0),
     ("ctor-green", None, 1),
     ("ctor-blue", None, 2),
+    # `mixed`'s two nullary constructors. `m_last` is declaration index 3 and
+    # unboxed ordinal 1, which is the whole point of the type: the ordinal is
+    # not the declaration index once a constructor with arguments comes first.
+    ("ctor-mixed-first", None, 0),
+    ("ctor-mixed-last", None, 1),
+]
+
+# `mixed`'s two constructors *with* arguments, which carry an ordinal rather
+# than an immediate. Read by diffing the two modules against each other -- see
+# `boxed_ordinals` -- so they come as a pair, with the ordinal each must have.
+BOXED = [
+    ("ctor-mixed-boxed-a", 0),
+    ("ctor-mixed-boxed-b", 1),
 ]
 
 CONST = re.compile(r'^\s*pub const (?P<name>[A-Z_]+): &str = "(?P<value>[^"]*)";', re.M)
@@ -228,6 +245,44 @@ def returned_immediate(names: dict[str, str], wat: str, stem: str) -> int:
     return constants[0]
 
 
+def boxed_ordinals(wats: dict[str, str], stems: list[str]) -> dict[str, int]:
+    """The ordinals of two constructors that take arguments.
+
+    A function returning `C x` does not compile to a single constant the way a
+    nullary one does: the body allocates the block, so the ordinal sits among
+    the allocator's own constants with nothing to mark it. But two functions
+    differing in nothing except which constructor they build must compile to
+    bodies differing in exactly one constant, and that constant is the
+    ordinal.
+
+    So this reads them against each other rather than against a pattern. If
+    the bodies differ anywhere else, the codegen has changed and the ordinal
+    can no longer be read this way -- which is a `Mismatch`, not a finding:
+    nothing can be concluded, and guessing would be worse than stopping.
+    """
+    a, b = stems
+    consts = {
+        stem: [int(m.group("value")) for m in I32_CONST.finditer(wats[stem])]
+        for stem in stems
+    }
+    if len(consts[a]) != len(consts[b]):
+        raise Mismatch(
+            f"{a} holds {len(consts[a])} i32 constants and {b} holds "
+            f"{len(consts[b])}. They are the same function but for the "
+            "constructor, so the bodies have to have the same shape; the "
+            "codegen changed and this check has to be rewritten to follow it."
+        )
+    differ = [i for i, (x, y) in enumerate(zip(consts[a], consts[b])) if x != y]
+    if len(differ) != 1:
+        raise Mismatch(
+            f"{a} and {b} differ in {len(differ)} i32 constants "
+            f"(positions {differ}), not one. The ordinal is read as the one "
+            "constant that changes when only the constructor does; that no "
+            "longer identifies it."
+        )
+    return {stem: consts[stem][differ[0]] for stem in stems}
+
+
 def measured_values(path: Path) -> dict[str, int]:
     """What bindgen/src/measured.rs records, keyed by -file stem."""
     text = path.read_text()
@@ -289,7 +344,15 @@ def check_constructors(repr_text: str, names: dict[str, str], wats: dict[str, st
         m.group("name"): int(m.group("ordinal")) for m in ORDINAL_CONST.finditer(repr_text)
     }
 
-    found = {}
+    found = dict(boxed_ordinals(wats, [stem for stem, _ in BOXED]))
+    for stem, ordinal in BOXED:
+        if found[stem] != ordinal:
+            problems.append(
+                f"{stem}: the backend uses ordinal {found[stem]}, but "
+                f"repr::ordinal::assign gives it {ordinal}. A constructor "
+                "with arguments is found by its ordinal in the block's first "
+                "cell, so the wrong one names a different constructor."
+            )
     for stem, const, ordinal in CONSTRUCTORS:
         found[stem] = returned_immediate(names, wats[stem], stem)
         if const is not None:
@@ -424,6 +487,7 @@ def main() -> int:
             problems = check(names, disassemble(shape[MODULE_STEM]))
         with tempfile.TemporaryDirectory() as tmp:
             stems = [stem for stem, _, _ in CONSTRUCTORS]
+            stems += [stem for stem, _ in BOXED]
             modules = compile_wasm(args.constructor_source, Path(tmp), stems)
             ctor_problems, found = check_constructors(
                 repr_text,
@@ -466,8 +530,9 @@ def main() -> int:
 
     checked = ", ".join(names[c] for c in BACKEND_EXPORTS)
     print(f"repr.rs agrees with CertiRocq: {checked}, no imports, one memory,")
-    print("type index n taking n i32s, and the nullary constructors of")
-    print("`bool` (swapped) and a three-case inductive (not swapped).")
+    print("type index n taking n i32s, the nullary constructors of `bool`")
+    print("(swapped) and a three-case inductive (not swapped), and the")
+    print("independent boxed and unboxed ordinals of a type mixing both.")
     return 0
 
 

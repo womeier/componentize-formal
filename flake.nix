@@ -110,7 +110,7 @@
       checks = forAllSystems (pkgs: let
         bindgen = bindgenFor pkgs;
       in {
-        # Building the package runs the 29 integration and 7 unit tests in the
+        # Building the package runs the 31 integration and 8 unit tests in the
         # sandbox, which is stricter than `cargo test` in a checkout: it has
         # caught files missing from `bindgenSrc` that the checkout still had.
         componentize-formal = bindgen;

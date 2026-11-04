@@ -15,6 +15,11 @@ them are load-bearing:
   * `plus1(9223372036854775808) = err(out-of-range)` -- that u64 has no
     Uint63.int, and the hand-written reference adapter in CertiRocq's
     testing/examples returns a wrong answer here instead.
+  * `add-byte(exactly(41)) = ok(exactly(42))` -- CertiRocq numbers boxed and
+    unboxed constructors with independent counters, so `exactly` is boxed
+    ordinal 0 while `too-big` is unboxed ordinal 1. Give `exactly` the ordinal
+    its WIT discriminant suggests and the answer comes back
+    `ok(at-least(42))`.
   * `err(out-of-memory)` -- the allocator is reported, not trapped on. The
     `record` example reaches it through the *second* check, after a call that
     succeeded in building its closure and then ran out; delete that check and
@@ -71,6 +76,19 @@ EXPECTED: dict[str, dict[str, list[str]]] = {
         "run-stub-oom": [
             "grow({start:10,byte-length:1}) with the heap exhausted "
             "= err(out-of-memory)",
+        ],
+    },
+    "variant": {
+        "run-stub": [
+            "add-byte(unknown) = ok(at-least(1))",
+            "add-byte(exactly(41)) = ok(exactly(42))",
+            "add-byte(at-least(7)) = ok(at-least(8))",
+            "add-byte(exactly(9223372036854775807)) = ok(too-big)",
+            "add-byte(too-big) = ok(too-big)",
+            "add-byte(exactly(9223372036854775808)) = err(out-of-range)",
+        ],
+        "run-stub-oom": [
+            "add-byte(exactly(41)) with the heap exhausted = err(out-of-memory)",
         ],
     },
 }

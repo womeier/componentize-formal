@@ -55,6 +55,7 @@ COMPARED = ["interface.v", "extraction.v", "adapter.wat"]
 # something for would be worse than one it rejects.
 AHEAD_OF_THE_GATE = {
     "record": "E-STRUCTURED",
+    "variant": "E-STRUCTURED",
 }
 
 

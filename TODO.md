@@ -229,6 +229,18 @@ Constant functions, not `negb`: an involution hides a swapped encoding
 completely, because lifting and lowering with the same wrong mapping cancels
 out and every answer still looks right.
 
+A constructor that *takes arguments* carries an ordinal rather than an
+immediate, and compiles to a body full of the allocator's own constants with
+nothing marking which one it is. Those are read by diffing instead: two
+functions differing in nothing but the constructor they build must compile to
+bodies differing in exactly one constant. `mixed := m_first | m_boxed_a _ |
+m_boxed_b _ | m_last` is the type that matters, because its two boxed
+constructors are ordinals 0 and 1 --- the same numbers its two nullary ones
+have --- so an adapter going by the WIT discriminant names a different
+constructor while type-checking perfectly. That is what
+[`examples/variant`](examples/variant) is built on, and the measurement is
+what holds `repr::ordinal::assign` to the backend rather than to itself.
+
 **1c — the components answer.** `checks.smoke`
 ([`checks/smoke.py`](checks/smoke.py)) assembles each example under
 [`examples/`](examples) into a component and compares what `wasmtime` prints
@@ -501,7 +513,8 @@ holds the generator to *refusing* it, with `E-STRUCTURED`, until this section
 is done, so the day the gate starts accepting records is the day that check
 asks for the emitter to match the example token for token.
 
-Four things the example settles, none of them guessable from the sources:
+Four things the record example settles, none of them guessable from the
+sources:
 
 - A WIT record of two `u64`s **flattens** into two core `i64` parameters, so
   nothing arrives by pointer and the adapter has to *build* the Rocq value:
@@ -520,6 +533,38 @@ Four things the example settles, none of them guessable from the sources:
   *during* the call leaves the closure in `result`, and without the check the
   component answers `ok({start: 0, byte-length: 0})`. `plus1`'s stub cannot
   reach that branch.
+
+[`examples/variant`](examples/variant) is the other half, for
+
+```wit
+variant byte-count { unknown, exactly(u64), at-least(u64), too-big }
+export add-byte: func(c: byte-count) -> result<byte-count, error>;
+```
+
+and it is the one that makes the per-class ordinals visible:
+
+| WIT discriminant | case | CertiRocq |
+| --- | --- | --- |
+| 0 | `unknown` | immediate `1` --- unboxed ordinal 0 |
+| 1 | `exactly(u64)` | `[0, &payload]` --- boxed ordinal 0 |
+| 2 | `at-least(u64)` | `[1, &payload]` --- boxed ordinal 1 |
+| 3 | `too-big` | immediate `3` --- unboxed ordinal 1 |
+
+No arithmetic on the discriminant produces that column, which is why `enum`
+could get away with `2*d+1` and `variant` cannot: the adapter writes the cases
+out one at a time, in both directions, and the tag bit is what says which class
+a number belongs to. Lift `exactly` with ordinal 1 instead of 0 and the
+component answers `add-byte(exactly(41)) = ok(at-least(42))` --- it assembles,
+runs, and lies. Two further things it settles:
+
+- A variant **flattens** to its discriminant plus the join of its payloads, so
+  a four-case variant with two `u64` payloads arrives as an `i32` and an `i64`
+  --- and for the two cases that carry nothing, that `i64` is not part of the
+  value, so it must not be range-checked.
+- The compiled `match` **traps** on a value that is neither of the immediates
+  nor either ordinal, so the adapter's lowering does too. An adapter more
+  forgiving than the module it is linked into turns a representation that has
+  drifted into a wrong answer instead of a stop.
 
 ### <a id="f64"></a>`f64` — `E-FLOAT`, phase 4
 

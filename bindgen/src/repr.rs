@@ -217,6 +217,33 @@ mod tests {
         );
     }
 
+    /// The same, against the backend rather than against itself.
+    ///
+    /// `checks/rocq/constructors.v` declares
+    /// `mixed := m_first | m_boxed_a _ | m_boxed_b _ | m_last` and
+    /// `checks/representation.py` reads what a compiled module does with it
+    /// into [`crate::measured`]. The two boxed ordinals reuse the numbers the
+    /// two nullary ones already have, so an adapter that went by the
+    /// declaration index would name a different constructor -- which is what
+    /// `examples/variant` is built on.
+    #[test]
+    fn mixed_ordinals_match_the_backend() {
+        // m_first | m_boxed_a _ | m_boxed_b _ | m_last
+        let assigned = ordinal::assign(&[0, 1, 1, 0]);
+        let nullary: Vec<u32> = assigned
+            .iter()
+            .filter(|(_, boxed)| !boxed)
+            .map(|(ord, _)| nullary_immediate(*ord))
+            .collect();
+        let boxed: Vec<u32> = assigned
+            .iter()
+            .filter(|(_, boxed)| *boxed)
+            .map(|(ord, _)| *ord)
+            .collect();
+        assert_eq!(nullary, crate::measured::MIXED_NULLARY_IMMEDIATES);
+        assert_eq!(boxed, crate::measured::MIXED_BOXED_ORDINALS);
+    }
+
     /// All-nullary types are the easy case: ordinal is the declaration index.
     #[test]
     fn enum_ordinals_are_the_declaration_index() {

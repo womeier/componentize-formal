@@ -1,0 +1,9 @@
+wit = "wit"
+world = "wrapper-world"
+
+[impl]
+file = "impl.v"
+module = "Impl"
+
+[wasm]
+name = "rocq-add-byte"
