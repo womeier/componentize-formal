@@ -177,7 +177,7 @@ function-table export no released CertiRocq has, so CertiRocq is built here
 from a branch rebased on `main`, and `main` in turn needs a MetaRocq and a
 WasmCert-Coq newer than any cache holds — so those are built too. [TODO.md#table-export](TODO.md#table-export) has the
 reasoning and the exit. Everything underneath is still a cache hit, which
-`checks/substitutable.py` enforces. `nix develop .#bindgen` needs none of it.
+`checks/cache_hits.py` enforces. `nix develop .#bindgen` needs none of it.
 
 `nix flake check` runs the whole gate, and CI does nothing but run that command,
 so a green checkout is a green branch:

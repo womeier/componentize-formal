@@ -36,7 +36,7 @@
     # builds -- WasmCert-Coq 2.2.1, which is short, and MetaRocq at the head
     # of its `9.1` branch, which is hours. The comments there carry the
     # evidence for each. Only CompCert and the rest of the Rocq set are still
-    # the cache hits `checks/substitutable.py` speaks for, and that check says
+    # the cache hits `checks/cache_hits.py` speaks for, and that check says
     # what it can no longer cover.
     certirocq = {
       url = "github:womeier/certirocq/546dd8a89f6fe15756b5b67176650bc8222e4ad4";
@@ -107,7 +107,7 @@
       # pin and upstream's branch-name pin, which produces the `-dev` store
       # names their CI pushes -- and both miss, because upstream builds it
       # through coq-nix-toolbox's overlays rather than this nixpkgs
-      # revision's expression. So `checks/substitutable.py` can no longer
+      # revision's expression. So `checks/cache_hits.py` can no longer
       # speak for MetaRocq; it says so, and says why.
       #
       # WasmCert-Coq is moved for a narrower reason, and cheaply. `main`'s

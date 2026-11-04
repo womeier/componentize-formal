@@ -366,7 +366,7 @@ which needs a `python3` it does not bring, and the plugins moved to
 know. `flake.nix` corrects those two, following CertiRocq's own
 `.nix/coq-overlays/CertiRocq/default.nix`.
 
-The consequence for `checks/substitutable.py` is that it can no longer speak
+The consequence for `checks/cache_hits.py` is that it can no longer speak
 for MetaRocq, the build it existed to protect. It checks what is left ---
 CompCert, and the inputs MetaRocq is built from --- and says in its docstring
 what it gave up.

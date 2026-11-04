@@ -30,7 +30,7 @@ trivial, specific to this flake, and in no cache anywhere -- so the flag would
 always fail, and for a reason that says nothing about the pin. The wrapper's
 *inputs* are the interesting part, so those are what gets checked.
 
-    python3 checks/substitutable.py
+    python3 checks/cache_hits.py
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ def nix(*args: str) -> str:
     )
     if result.returncode != 0:
         raise SystemExit(
-            f"substitutable: `nix {' '.join(args)}` failed:\n{result.stderr}"
+            f"cache-hits: `nix {' '.join(args)}` failed:\n{result.stderr}"
         )
     return result.stdout.strip()
 
@@ -94,14 +94,14 @@ def shell_inputs(system: str, name: str) -> list[str]:
     )
     if refs.returncode != 0:
         raise SystemExit(
-            f"substitutable: could not read the inputs of devShells.{system}."
+            f"cache-hits: could not read the inputs of devShells.{system}."
             f"{name}:\n{refs.stderr}"
         )
 
     inputs = [f"{line}^*" for line in refs.stdout.split() if line.endswith(".drv")]
     if not inputs:
         raise SystemExit(
-            f"substitutable: devShells.{system}.{name} reported no input "
+            f"cache-hits: devShells.{system}.{name} reported no input "
             "derivations, so this check would pass without testing anything."
         )
     return inputs
@@ -123,7 +123,7 @@ def package_inputs(attr: str) -> list[str]:
     )
     if refs.returncode != 0:
         raise SystemExit(
-            f"substitutable: could not read the inputs of {attr}:\n{refs.stderr}"
+            f"cache-hits: could not read the inputs of {attr}:\n{refs.stderr}"
         )
 
     inputs = [
@@ -133,7 +133,7 @@ def package_inputs(attr: str) -> list[str]:
     ]
     if not inputs:
         raise SystemExit(
-            f"substitutable: {attr} reported no input derivations, so this "
+            f"cache-hits: {attr} reported no input derivations, so this "
             "check would pass without testing anything."
         )
     return inputs
@@ -141,7 +141,7 @@ def package_inputs(attr: str) -> list[str]:
 
 def realise(what: str, installables: list[str]) -> bool:
     """Fetch these without building anything. True if that was possible."""
-    print(f"substitutable: {what} ({len(installables)} derivation(s))", flush=True)
+    print(f"cache-hits: {what} ({len(installables)} derivation(s))", flush=True)
     result = subprocess.run(
         ["nix", "build", "--max-jobs", "0", "--no-link", *installables],
         text=True,
@@ -151,7 +151,7 @@ def realise(what: str, installables: list[str]) -> bool:
     if result.returncode == 0:
         return True
 
-    print(f"\nsubstitutable: {what} is not fully cached.", file=sys.stderr)
+    print(f"\ncache-hits: {what} is not fully cached.", file=sys.stderr)
     print(result.stderr.strip(), file=sys.stderr)
     return False
 
@@ -189,7 +189,7 @@ def main() -> int:
         )
         return 1
 
-    print("substitutable: everything heavy is a cache hit")
+    print("cache-hits: everything heavy is a cache hit")
     return 0
 
 

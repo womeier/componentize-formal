@@ -27,7 +27,7 @@ permissions:
   contents: read
 
 jobs:
-  substitutable:
+  cache-hits:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -40,7 +40,7 @@ jobs:
       # The logic lives in the script, which explains what it concludes and
       # why a dev shell cannot be checked directly. Runs standalone too.
       # Runner python3; the script only needs `nix` on PATH.
-      - run: python3 checks/substitutable.py
+      - run: python3 checks/cache_hits.py
 
       # A smoke test that the shell is usable, not a substitutability claim:
       # `nix develop` always builds the shell's own wrapper derivation.
