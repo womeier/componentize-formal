@@ -663,6 +663,58 @@ fn a_mistake_in_a_vendored_tree_is_reported_not_panicked() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A type with no cases must not reach the gate.
+///
+/// `enum nothing { }` and `variant nothing { }` are the only WIT spellings of
+/// an uninhabited type, and every claim `repr.rs` makes is about a constructor
+/// there is at least one of. A case-less enum would plan as `Repr::Enum {
+/// cases: 0, .. }`, declare `Inductive nothing := .` in `interface.v`, and
+/// leave the adapter lowering a discriminant no value of the type has -- an
+/// export nothing could ever call.
+///
+/// Nothing in the emitters or the gate says so, because `wit-parser` refuses
+/// both while parsing, before `resolve_world` returns a world there would be
+/// anything to walk. That is why neither has an `E-` code, and it is also why
+/// this test exists: the refusal belongs to the pinned parser rather than to
+/// us, so a bump that started accepting an empty enum would hand one straight
+/// to the emitters with nothing in between.
+#[test]
+fn a_type_with_no_cases_is_refused_by_the_parser() {
+    let refused = |label: &str, decl: &str| -> String {
+        let dir = std::env::temp_dir().join(format!("bindgen-{label}-{}", std::process::id()));
+        let deps = dir.join("deps/certirocq-abi");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::write(deps.join("errors.wit"), componentize_formal::ABI_WIT).unwrap();
+        std::fs::write(
+            dir.join("world.wit"),
+            format!(
+                "package local:demo;\n\
+                 world w {{\n\
+                 \x20 use certirocq:abi/errors@0.1.0.{{error}};\n\
+                 \x20 {decl}\n\
+                 \x20 export pick: func(n: nothing) -> result<u64, error>;\n\
+                 }}\n"
+            ),
+        )
+        .unwrap();
+        let err = format!(
+            "{:#}",
+            resolve_world(&dir, None).expect_err("a type with no cases must be an error")
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        err
+    };
+
+    let no_enum_cases = refused("empty-enum", "enum nothing { }");
+    assert!(no_enum_cases.contains("empty enum"), "{no_enum_cases}");
+
+    let no_variant_cases = refused("empty-variant", "variant nothing { }");
+    assert!(
+        no_variant_cases.contains("empty variant"),
+        "{no_variant_cases}"
+    );
+}
+
 /// Every code in the catalogue has a `TODO.md` section saying what it would
 /// take to lift, and every code the gate raises is in the catalogue.
 ///
