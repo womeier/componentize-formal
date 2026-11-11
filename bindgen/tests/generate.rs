@@ -127,6 +127,38 @@ world wrapper-world {
 }
 "#;
 
+/// Both halves the same type, so the two cases share a flat slot *and* both
+/// need the same check -- each under its own discriminant.
+const SWAP: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export swap: func(x: result<u64, u64>) -> result<result<u64, u64>, error>;
+}
+"#;
+
+/// An `enum` payload inside a sum, next to a parameter that needs a box of
+/// its own: two parameters that want memory for different reasons.
+const SHADE: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum colour { red, green, blue }
+  export shade: func(n: u64, c: option<colour>) -> result<option<colour>, error>;
+}
+"#;
+
+/// The sum in the result only, with a `bool` going in: the direction that
+/// cannot narrow.
+fn sums_world_result(ty: &str) -> String {
+    format!(
+        r#"package local:demo;
+world wrapper-world {{
+  use certirocq:abi/errors@0.1.0.{{error}};
+  export hold: func(b: bool) -> result<{ty}, error>;
+}}
+"#
+    )
+}
+
 /// The same sum in both positions, for whichever of the four spellings is
 /// being asked about.
 fn sums_world(ty: &str) -> String {
@@ -311,6 +343,23 @@ fn a_u64_result_needs_no_range_check() {
     // The lift itself is there, so this is not passing because the result went
     // missing.
     assert!(adapter.contains("(i64.load"), "{adapter}");
+
+    // The same for a `u64` buried in the result. `carries_int63` is recursive
+    // and decides the *import*, so a check derived from it rather than from
+    // the parameters would fire here -- and there is nothing to fire about: a
+    // 63-bit int always has a `u64`.
+    let plan = plan_for("hold", &sums_world_result("option<u64>"));
+    assert_eq!(plan.export.discriminants.out_of_range, None);
+    let adapter = emit::adapter::adapter(&plan);
+    assert_eq!(
+        adapter.matches("i64.lt_s").count(),
+        0,
+        "nothing to range-check:\n{adapter}"
+    );
+    assert!(
+        emit::rocq::interface(&plan).contains("From Stdlib Require Import Uint63."),
+        "the payload still needs its import"
+    );
 }
 
 /// `$ok` is handed a value that is already converted, and stores it. Both
@@ -412,6 +461,59 @@ fn a_sum_inside_a_sum_is_one_more_level() {
     );
 }
 
+/// Three deep, to say that two was not the special case either. The numbers
+/// are the same rule applied again: a slot and a level of cells per level, and
+/// the payload reached through one more block.
+#[test]
+fn nesting_is_not_bounded_at_two() {
+    let plan = plan_for(
+        "deep",
+        r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export deep: func(x: option<option<option<u64>>>) -> result<option<option<option<u64>>>, error>;
+}
+"#,
+    );
+    let p = &plan.export.params[0];
+    assert_eq!(
+        slots(p),
+        [
+            ("x_f0", "i32"),
+            ("x_f1", "i32"),
+            ("x_f2", "i32"),
+            ("x_f3", "i64")
+        ]
+    );
+    assert_eq!(plan.export.layout.ret_size, 40, "one more 8-byte level");
+    let adapter = emit::adapter::adapter(&plan);
+    assert!(
+        adapter.contains(
+            "(i64.load (i32.load offset=4 (i32.load offset=4 (i32.load offset=4 (local.get $val)))))"
+        ),
+        "{adapter}"
+    );
+    assert_eq!(
+        adapter.matches("(if (result i32) (i32.eqz").count(),
+        3,
+        "one `if` per level:\n{adapter}"
+    );
+    // Three discriminants have to hold for the payload to be there, and the
+    // range check sits under all three.
+    assert!(
+        adapter.contains(
+            "(if (i32.eq (local.get $x_f0) (i32.const 1))\n      \
+             (then\n        \
+             (if (i32.eq (local.get $x_f1) (i32.const 1))\n          \
+             (then\n            \
+             (if (i32.eq (local.get $x_f2) (i32.const 1))\n              \
+             (then\n                \
+             (if (i64.lt_s (local.get $x_f3) (i64.const 0))"
+        ),
+        "{adapter}"
+    );
+}
+
 /// Every check on a nested payload runs under *all* the discriminants that
 /// make it live, not just the innermost one. The canonical ABI zero-pads the
 /// slots of a case that was not sent, and a payload two levels down is
@@ -474,6 +576,131 @@ fn a_narrower_case_reads_its_slot_back_down() {
     );
 }
 
+/// An `enum` with more cases than a byte holds. The discriminant is where the
+/// canonical ABI stops being one shape: 2 bytes rather than 1, which moves the
+/// payload, the size, the alignment and the store instruction -- none of which
+/// is written down in this generator, and all of which a `u8` assumption would
+/// get right for every other world in these tests.
+#[test]
+fn a_discriminant_wider_than_a_byte_is_stored_wider() {
+    let cases = (0..257)
+        .map(|i| format!("c{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let wide = format!(
+        r#"package local:demo;
+world wrapper-world {{
+  use certirocq:abi/errors@0.1.0.{{error}};
+  enum wide {{ {cases} }}
+  export next: func(c: wide) -> result<wide, error>;
+}}
+"#
+    );
+    let plan = plan_for("wide", &wide);
+    let l = &plan.export.layout;
+    assert_eq!(
+        (l.ret_size, l.ret_align, l.payload),
+        (4, 2, 2),
+        "a 2-byte payload at an even offset, not a byte at 1"
+    );
+    let adapter = emit::adapter::adapter(&plan);
+    assert!(
+        adapter.contains("(i32.store16 offset=2 (local.get $ret) (local.get $val))"),
+        "{adapter}"
+    );
+    // The channel's own discriminant still fits in a byte, and the error half
+    // is still an enum of two: the two widths are independent.
+    assert!(
+        adapter.contains(
+            "(func $err (param $ret i32) (param $case i32)\n    \
+                          (i32.store8 (local.get $ret) (i32.const 1))\n    \
+                          (i32.store8 offset=2 (local.get $ret) (local.get $case)))"
+        ),
+        "{adapter}"
+    );
+    assert!(
+        adapter.contains("(if (i32.ge_u (local.get $c) (i32.const 257))"),
+        "{adapter}"
+    );
+}
+
+/// Two cases of the same type: they share a flat slot, and each needs the
+/// check the other needs. Both checks read the *same* local, so the only thing
+/// telling them apart is the discriminant they sit under -- and a single
+/// unguarded check would pass this world while rejecting a value that is in
+/// range for the case it was sent as.
+#[test]
+fn both_halves_of_a_sum_are_checked_separately() {
+    let plan = plan_for("swap", SWAP);
+    assert_eq!(
+        slots(&plan.export.params[0]),
+        [("x_f0", "i32"), ("x_f1", "i64")]
+    );
+    let adapter = emit::adapter::adapter(&plan);
+    assert_eq!(
+        adapter
+            .matches("(i64.lt_s (local.get $x_f1) (i64.const 0))")
+            .count(),
+        2,
+        "one check per case:\n{adapter}"
+    );
+    for discriminant in [0, 1] {
+        assert!(
+            adapter.contains(&format!(
+                "(if (i32.eq (local.get $x_f0) (i32.const {discriminant}))\n      \
+                 (then\n        \
+                 (if (i64.lt_s (local.get $x_f1) (i64.const 0))"
+            )),
+            "no check under discriminant {discriminant}:\n{adapter}"
+        );
+    }
+    // And the cases do not share their payload cell, even though they share
+    // the slot it comes from: only one is ever written, but a cell reused
+    // between them is a trap waiting for the first case that is live across
+    // the other's store.
+    let block = plan.export.params[0]
+        .block
+        .as_ref()
+        .expect("a sum is built in memory");
+    assert!(
+        adapter.contains("(i64.store offset=8 (local.get $arg) (local.get $x_f1))")
+            && adapter.contains("(i64.store offset=16 (local.get $arg) (local.get $x_f1))"),
+        "{adapter}"
+    );
+    assert_eq!(block.size, 24, "the block, then a payload cell per case");
+}
+
+/// A parameter that needs memory because it is boxed, next to one that needs
+/// it because it is a sum. The blocks are sized per parameter and numbered
+/// over the ones that need memory, so neither can land where nothing reserved
+/// -- and a payload inside the sum is checked under the discriminant that
+/// selects it, which for an `enum` means its *own* bound rather than the
+/// sum's.
+#[test]
+fn blocks_are_sized_per_parameter() {
+    let plan = plan_for("shade", SHADE);
+    assert_eq!(
+        blocks(&plan),
+        [Some((8, "arg_n")), Some((16, "arg_c"))],
+        "the return area is 3 bytes rounded to 8, then 8 for the int, then the block"
+    );
+    assert_eq!(plan.export.layout.reserve, 24);
+
+    let adapter = emit::adapter::adapter(&plan);
+    assert!(
+        adapter.contains(
+            "(if (i32.eq (local.get $c_f0) (i32.const 1))\n      \
+             (then\n        \
+             (if (i32.ge_u (local.get $c_f1) (i32.const 3))\n          \
+             (then unreachable))))"
+        ),
+        "the enum payload keeps its own bound:\n{adapter}"
+    );
+    // The `u64` parameter is still checked, and the sum carries no `u64` at
+    // all -- so the one range check here is the plain one.
+    assert_eq!(adapter.matches("(i64.lt_s").count(), 1, "{adapter}");
+}
+
 /// Which Rocq constructor carries which WIT case, for all four spellings of a
 /// two-case sum. Three of the four are `option`, and the two `result` rows map
 /// `ok` to opposite constructors -- so the table is the behaviour, and a
@@ -506,6 +733,68 @@ fn each_sum_spelling_maps_its_cases() {
         mapping("err-only", "result<_, bool>"),
         "(* `result<_, bool>` is carried as `option bool`: `ok` is `None`, `err` is `Some` *)"
     );
+}
+
+/// `$ok` writes the discriminant of the case it found, not of the branch it
+/// is in. For an `option<T>` those agree -- the empty case is discriminant 0
+/// and is the immediate -- and for a `result<T>` they do not: its immediate
+/// case is `err`, discriminant 1. A `$ok` that wrote 0 in its immediate branch
+/// would answer `ok` for every `err` of every `result<T>` and still pass every
+/// `option` test.
+#[test]
+fn the_immediate_case_keeps_its_own_discriminant() {
+    let immediate_branch = |ty: &str| {
+        let plan = plan_for("f", &sums_world(ty));
+        let adapter = emit::adapter::adapter(&plan);
+        let start = adapter
+            .find("(if (i32.and (local.get $val)")
+            .unwrap_or_else(|| panic!("no tag-bit test:\n{adapter}"));
+        let end = adapter[start..].find("(else").expect("two branches") + start;
+        adapter[start..end].to_string()
+    };
+    assert!(
+        immediate_branch("option<u64>").contains("(i32.const 0)"),
+        "an `option`'s immediate case is `none`, discriminant 0"
+    );
+    assert!(
+        immediate_branch("result<u64>").contains("(i32.const 1)"),
+        "a `result<u64>`'s immediate case is `err`, discriminant 1"
+    );
+}
+
+/// The abi error enum, used as a value in the err half of a sum *and* as the
+/// channel. Two roles for one WIT type: the generator declares an inductive
+/// for the value -- which it does not for the channel, whose cases belong to
+/// the adapter -- and the channel's own discriminants are unaffected.
+#[test]
+fn the_error_enum_can_also_be_a_value() {
+    let plan = plan_for(
+        "retry",
+        r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export retry: func(previous: result<u64, error>) -> result<u64, error>;
+}
+"#,
+    );
+    let interface = emit::rocq::interface(&plan);
+    assert_eq!(
+        interface.matches("Inductive error :=").count(),
+        1,
+        "{interface}"
+    );
+    assert!(
+        interface.contains("Parameter retry : sum int error -> int."),
+        "{interface}"
+    );
+
+    let adapter = emit::adapter::adapter(&plan);
+    assert!(
+        adapter.contains("(func $err (param $ret i32) (param $case i32)"),
+        "the channel still reports through its own enum:\n{adapter}"
+    );
+    assert_eq!(plan.export.discriminants.out_of_memory, 0);
+    assert_eq!(plan.export.discriminants.out_of_range, Some(1));
 }
 
 /// The payload's import follows the payload. A signature that says `int`

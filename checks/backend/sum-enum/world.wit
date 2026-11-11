@@ -1,0 +1,15 @@
+package local:backend;
+
+// An `enum` payload inside a sum, which is the one combination where a boxed
+// constructor's field holds an *immediate* rather than a pointer: `[0, 2*ord+1]`.
+// Nothing under examples/ has it, and it is the shape a lift reaching one cell
+// too far would still answer plausibly for.
+//
+// The permutation has no fixed point and moves `none` into the sum and back
+// out, so each of the four shapes answers as itself and nothing survives a
+// level being lost. First case, a middle one and the last are all covered.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum colour { red, green, blue }
+  export shade: func(c: option<colour>) -> result<option<colour>, error>;
+}

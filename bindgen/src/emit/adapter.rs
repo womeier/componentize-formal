@@ -237,11 +237,18 @@ fn reserve(out: &mut String, e: &Export) {
     let l = &e.layout;
     let blocks: Vec<&super::plan::Param> = e.params.iter().filter(|p| p.has_block()).collect();
 
+    // A sum's cells are not a box: its empty case stores nothing and is passed
+    // as an immediate, so only some of the values built in there are boxed.
+    // The hand-written examples' word is kept where it is still true.
+    let (one, many) = match blocks.iter().all(|p| p.repr.boxed()) {
+        true => ("the boxed argument", "boxed arguments"),
+        false => ("the cells one argument is built in", "argument blocks"),
+    };
     let mut lines = vec![
         match blocks.len() {
             0 => "The return area comes off the same bump".to_string(),
-            1 => "The return area and the boxed argument come off the same bump".to_string(),
-            n => format!("The return area and the {n} boxed arguments come off the same bump"),
+            1 => format!("The return area and {one} come off the same bump"),
+            n => format!("The return area and the {n} {many} come off the same bump"),
         },
         format!(
             "pointer the backend allocates from, before `{}` runs,",
@@ -254,8 +261,8 @@ fn reserve(out: &mut String, e: &Export) {
     // Why it is all taken up front rather than one box reused per argument.
     if blocks.len() > 1 {
         lines.extend([
-            "Every box is reserved here and none is reused: applying an".to_string(),
-            "argument captures its box by address, and a later application".into(),
+            "Every one is reserved here and none is reused: applying an".to_string(),
+            "argument captures its cells by address, and a later application".into(),
             "reads back through that pointer (TODO.md#arity).".into(),
             String::new(),
         ]);

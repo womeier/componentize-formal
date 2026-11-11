@@ -170,6 +170,59 @@ fn reports_every_offending_position() {
         .any(|(what, site)| what == "f32" && site.contains("result")));
 }
 
+/// The one exported function of a fixture.
+fn export_of(path: &Path) -> (wit_parser::Resolve, wit_parser::Function) {
+    let (resolve, world) = resolve_world(path, None).unwrap();
+    let f = resolve.worlds[world]
+        .exports
+        .values()
+        .find_map(|item| match item {
+            wit_parser::WorldItem::Function(f) => Some(f.clone()),
+            _ => None,
+        })
+        .expect("one exported function");
+    (resolve, f)
+}
+
+/// What a sum contributes to the failure list, which is decided by what it
+/// *carries* rather than by what it is. An `option<u64>` can hold a `u64` with
+/// no `Uint63.int`; an `option<bool>` cannot hold anything of the sort, and a
+/// failure listed for it would be one the adapter has no branch for -- the
+/// generated `interface.v` names the failures from this list, so an invented
+/// one ends up in the user's file.
+#[test]
+fn only_a_sum_that_carries_a_u64_can_be_out_of_range() {
+    let (resolve, f) = export_of(&fixture("good", "option.wit"));
+    assert_eq!(
+        support::failure_modes(&resolve, &f),
+        vec![
+            support::Failure::OutOfMemory,
+            // Named as the payload it is, not as the parameter: `x` itself is
+            // a sum and is never out of range.
+            support::Failure::OutOfRange("a `u64` inside `x` >= 2^63".into()),
+        ]
+    );
+
+    let (resolve, f) = export_of(&fixture("good", "option-bool.wit"));
+    assert_eq!(
+        support::failure_modes(&resolve, &f),
+        vec![support::Failure::OutOfMemory],
+        "nothing an `option<bool>` holds has to narrow"
+    );
+
+    // Two `u64`s in one sum is still one failure mode: the list is the ways a
+    // call can fail, and both halves fail the same way. The adapter emits a
+    // check per case -- `both_halves_of_a_sum_are_checked_separately`.
+    let (resolve, f) = export_of(&fixture("good", "nested-mixed.wit"));
+    assert_eq!(
+        support::failure_modes(&resolve, &f),
+        vec![
+            support::Failure::OutOfMemory,
+            support::Failure::OutOfRange("a `u64` inside `x` >= 2^63".into()),
+        ]
+    );
+}
+
 /// u64 is carried by a 63-bit integer, so lowering one can overflow. That is
 /// accounted for as a failure mode of the parameter -- not of the result,
 /// where lifting a 63-bit int into a u64 is always exact -- and reported
