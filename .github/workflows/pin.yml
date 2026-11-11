@@ -1,11 +1,18 @@
-# flake.nix claims the pinned nixpkgs revision makes CertiRocq, MetaRocq and
-# CompCert cache hits from the coq-community caches, so nothing heavy is ever
-# built locally. This asserts that claim stays true -- a cache that is garbage
-# collected upstream turns `nix develop` into an hours-long MetaRocq build, and
-# the first person to find out should not be a contributor.
+# Two things about the caches, neither of which belongs in `nix flake check`
+# (and so in CI on every push), because both substitute gigabytes that nothing
+# in the generator needs yet.
 #
-# Kept out of `nix flake check` (and so out of CI on every push) because it
-# substitutes gigabytes that nothing in the generator needs yet.
+# Upstream: flake.nix pins a nixpkgs revision chosen so everything underneath
+# CertiRocq is a hit from the coq-community caches. `cache_hits.py` asserts
+# that stays true -- a cache garbage-collected upstream turns `nix develop`
+# into an hours-long Rocq build, and the first person to find out should not be
+# a contributor.
+#
+# Ours: CertiRocq, MetaRocq and WasmCert-Coq are source builds no upstream
+# cache holds (TODO.md#table-export), so they live in womeier.cachix.org and CI
+# substitutes them from there. Nothing keeps them alive but being pushed, so
+# this job rebuilds and re-pushes whatever the project cache has lost. A hit is
+# minutes; a miss is the full build, which is what the timeout is for.
 name: Pin
 
 on:
@@ -29,7 +36,9 @@ permissions:
 jobs:
   cache-hits:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Same reasoning as ci.yml: a cold project cache means building MetaRocq,
+    # and this is the job that is allowed to.
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v5
 
@@ -37,10 +46,25 @@ jobs:
         with:
           extra_nix_config: accept-flake-config = true
 
+      - uses: cachix/cachix-action@v17
+        with:
+          name: womeier
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       # The logic lives in the script, which explains what it concludes and
       # why a dev shell cannot be checked directly. Runs standalone too.
       # Runner python3; the script only needs `nix` on PATH.
+      #
+      # Deliberately before the step below, and deliberately not reading the
+      # project cache -- see the script. Asking upstream first means an
+      # upstream GC is reported as itself, rather than being hidden by our
+      # copy and then reported as a long build.
       - run: python3 checks/cache_hits.py
+
+      # Refills womeier.cachix.org: the cachix step above pushes whatever this
+      # builds. On a warm cache it substitutes and pushes nothing, which is
+      # also the check that the paths CI depends on are still there.
+      - run: nix build --print-build-logs --no-link .#certirocq
 
       # A smoke test that the shell is usable, not a substitutability claim:
       # `nix develop` always builds the shell's own wrapper derivation.

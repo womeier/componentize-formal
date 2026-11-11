@@ -24,6 +24,14 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
+    # `checks.representation` needs CertiRocq, and CertiRocq, MetaRocq and
+    # WasmCert-Coq are built from source on purpose (TODO.md#table-export).
+    # The cachix step below is what makes that cost once per pin rather than
+    # once per push -- but the run that pays it needs room, because MetaRocq
+    # alone is hours. Six hours is the cap GitHub enforces regardless; this
+    # sits under it so a run that cannot finish is stopped with a number to
+    # point at.
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v5
 
@@ -33,17 +41,25 @@ jobs:
           # nixConfig; accepting it keeps them stated once.
           extra_nix_config: accept-flake-config = true
 
+      # Reads and writes womeier.cachix.org, this project's own cache, which
+      # is the only one that can hold the three source builds -- see the
+      # `nixConfig` comment in flake.nix. Reading is what makes the final step
+      # minutes instead of hours; writing is what populates it again after a
+      # pin bump or a cache GC. Everything built in the job is pushed,
+      # including the generator's own small paths, because a contributor's
+      # `nix develop` wants those too.
+      #
+      # A fork PR has no access to the secret. cachix-action then substitutes
+      # from the public cache and skips the push, which is the behaviour we
+      # want: making a missing token fatal here would fail every fork PR.
+      - uses: cachix/cachix-action@v17
+        with:
+          name: womeier
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       # Evaluation only, every system in the flake: catches an eval error on
       # darwin or aarch64 that the build below would never reach.
       - run: nix flake check --all-systems --no-build
-
-      # `checks.representation` needs CertiRocq, which must always be a
-      # substitution from the coq-community caches. Asserting that up front
-      # with --max-jobs 0 turns a garbage-collected cache into a failure in
-      # seconds, rather than an hours-long MetaRocq build inside the step
-      # below. The weekly `pin` workflow catches the same rot when nobody is
-      # pushing.
-      - run: nix build --max-jobs 0 .#certirocq
 
       # Builds the checks for this system: the generator and its test suite in
       # the sandbox, clippy, rustfmt, the wit-parser/wasm-tools pin, and

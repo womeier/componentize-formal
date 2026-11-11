@@ -13,8 +13,8 @@ each of them (TODO.md#table-export): CertiRocq, because the adapter needs a
 function-table export no release has; WasmCert-Coq, because CertiRocq `main`
 needs 2.2.1 and the pin carries 2.2.0; and MetaRocq, because `main` imports a
 module that exists only on MetaRocq's `9.1` branch. The last one hurts --
-MetaRocq is the multi-hour build this check was written for, and no cache has
-it built against this pin.
+MetaRocq is the multi-hour build this check was written for, and no upstream
+cache has it built against this pin.
 
 So what is checked is what is left: CompCert, and the *inputs* MetaRocq is
 built from -- Rocq itself, Equations, the standard library, the OCaml
@@ -22,6 +22,16 @@ toolchain. Those are what a drifted pin would silently start rebuilding, and
 they are still hits. It is a weaker guarantee than before and worth
 restoring: an upstream CertiRocq that exports the table would retire all
 three exceptions at once.
+
+What is asked of *upstream* is also only asked of upstream. flake.nix lists a
+fourth substituter, `womeier.cachix.org`, which is this project's own and which
+CI pushes to. It pushes closures, so an upstream path can land in it by being a
+dependency of something that was built -- CompCert is one, under CertiRocq.
+Left in, it would answer for the pin: the check would go green on our own
+year-old copy long after the coq-community one was collected, which is the
+exact failure it exists to catch. So the substituters are named here instead of
+inherited, and `--no-accept-flake-config` stops flake.nix from appending the
+project cache back on.
 
 `--max-jobs 0` forbids local building, so any path that must be built rather
 than fetched fails the run. It cannot be pointed at a dev shell directly:
@@ -38,6 +48,26 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+
+# The caches this check is about, and the keys for them. Stated here rather
+# than taken from flake.nix's `nixConfig`, so that adding a substituter there
+# cannot quietly change what this concludes -- see the module docstring on
+# `womeier.cachix.org`. Passed with `--no-accept-flake-config`, which also
+# means the keys have to come along: refusing the flake's config refuses its
+# `extra-trusted-public-keys` too.
+UPSTREAM_SUBSTITUTERS = " ".join([
+    "https://cache.nixos.org",
+    "https://coq-community.cachix.org",
+    "https://coq.cachix.org",
+    "https://metarocq.cachix.org",
+])
+
+UPSTREAM_KEYS = " ".join([
+    "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+    "coq-community.cachix.org-1:WBDHojv8FM6nI4ZMh43X+2g6j4WpAn+dFhjhWmLCgnA=",
+    "coq.cachix.org-1:5QW/wwEnD+l2jvN6QRbRRsa4hBHG3QiQQ26cxu1F5tI=",
+    "metarocq.cachix.org-1:lxAsIEhIjsuVfPVdMQ4maAcYbQNUO9MsJQvxlozoZY0=",
+])
 
 # Flake attributes whose whole closure must come from a cache. Not `certirocq`
 # and no longer `metarocq`: see the module docstring -- both are built here on
@@ -143,7 +173,13 @@ def realise(what: str, installables: list[str]) -> bool:
     """Fetch these without building anything. True if that was possible."""
     print(f"cache-hits: {what} ({len(installables)} derivation(s))", flush=True)
     result = subprocess.run(
-        ["nix", "build", "--max-jobs", "0", "--no-link", *installables],
+        [
+            "nix", "build", "--max-jobs", "0", "--no-link",
+            "--no-accept-flake-config",
+            "--option", "substituters", UPSTREAM_SUBSTITUTERS,
+            "--option", "trusted-public-keys", UPSTREAM_KEYS,
+            *installables,
+        ],
         text=True,
         capture_output=True,
         check=False,
@@ -184,7 +220,8 @@ def main() -> int:
             "it, or move the nixpkgs pin to a revision that is still cached --\n"
             "see the comment on `inputs.nixpkgs` in flake.nix. CertiRocq,\n"
             "MetaRocq and WasmCert-Coq are expected to be built locally and are\n"
-            "not what this reports.",
+            "not what this reports, and neither does womeier.cachix.org count\n"
+            "here -- this asks upstream only.",
             file=sys.stderr,
         )
         return 1

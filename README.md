@@ -172,13 +172,6 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 the Rocq package set, for working on the generator alone.
 `nix build .#componentize-formal` builds the generator.
 
-The first `nix develop` is expensive: hours, not minutes. The adapter needs a
-function-table export no released CertiRocq has, so CertiRocq is built here
-from a branch rebased on `main`, and `main` in turn needs a MetaRocq and a
-WasmCert-Coq newer than any cache holds — so those are built too. [TODO.md#table-export](TODO.md#table-export) has the
-reasoning and the exit. Everything underneath is still a cache hit, which
-`checks/cache_hits.py` enforces. `nix develop .#bindgen` needs none of it.
-
 `nix flake check` runs the whole gate, and CI does nothing but run that command,
 so a green checkout is a green branch:
 

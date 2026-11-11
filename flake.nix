@@ -44,14 +44,15 @@
     };
   };
 
-  # Substituters holding the prebuilt Rocq package set for the pin above.
   nixConfig = {
     extra-substituters = [
+      "https://womeier.cachix.org"
       "https://coq-community.cachix.org"
       "https://coq.cachix.org"
       "https://metarocq.cachix.org"
     ];
     extra-trusted-public-keys = [
+      "womeier.cachix.org-1:0R8+V2ZDOk7mKAA+hF2VulnUoM3Qh8jmeDkcV8gw2Rs="
       "coq-community.cachix.org-1:WBDHojv8FM6nI4ZMh43X+2g6j4WpAn+dFhjhWmLCgnA="
       "coq.cachix.org-1:5QW/wwEnD+l2jvN6QRbRRsa4hBHG3QiQQ26cxu1F5tI="
       "metarocq.cachix.org-1:lxAsIEhIjsuVfPVdMQ4maAcYbQNUO9MsJQvxlozoZY0="
@@ -100,15 +101,6 @@
       # wants `rocq-core >= 9.1.0 & < 9.2` (9.1.1), `rocq-equations >= 1.3.1`
       # (1.3.1+9.1), `rocq-stdlib` 9.x and `coq-ext-lib >= 0.12` (0.13.1) --
       # so, like WasmCert, it needs no patching to build here.
-      #
-      # This one is not cheap: it is MetaRocq from source, and it is in no
-      # cache this flake can reach. Both spellings were checked against
-      # `metarocq.cachix.org` and `coq-community.cachix.org` -- this revision
-      # pin and upstream's branch-name pin, which produces the `-dev` store
-      # names their CI pushes -- and both miss, because upstream builds it
-      # through coq-nix-toolbox's overlays rather than this nixpkgs
-      # revision's expression. So `checks/cache_hits.py` can no longer
-      # speak for MetaRocq; it says so, and says why.
       #
       # WasmCert-Coq is moved for a narrower reason, and cheaply. `main`'s
       # `rocq-certirocq.opam:40` asks for `coq-wasm >= 2.2.1` and that is not
