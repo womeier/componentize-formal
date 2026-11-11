@@ -34,6 +34,7 @@ Rocq and no nixpkgs pin -- just wasm-tools, binaryen and wasmtime.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import stat
 import subprocess
@@ -103,9 +104,20 @@ def run_target(example: Path, target: str) -> list[str]:
         # next to the sources.
         for path in [work, *work.rglob("*")]:
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
+        # `wasmtime run` writes its compilation cache under the cache
+        # directory, and refuses to run at all when it cannot create it. In
+        # the Nix sandbox HOME is the non-existent /homeless-shelter, so point
+        # both knobs at the scratch copy: the cache is thrown away with it,
+        # which is what a check wants anyway.
+        home = Path(tmp) / "home"
+        (home / ".cache").mkdir(parents=True)
+        env = dict(
+            os.environ, HOME=str(home), XDG_CACHE_HOME=str(home / ".cache")
+        )
         result = subprocess.run(
             ["make", "-s", target],
             cwd=work,
+            env=env,
             text=True,
             capture_output=True,
             check=False,
