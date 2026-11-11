@@ -1,0 +1,13 @@
+package local:backend;
+
+// The other direction: the `option` is the result, so the adapter has to tell
+// a pointer from an immediate in a value the backend built -- the tag bit,
+// which no other case here exercises.
+//
+// Halving rather than wrapping the argument in `Some`: the payload is computed
+// from the argument, so a lift that read the wrong cell cannot answer with a
+// number that happens to be right.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export halve: func(n: u64) -> result<option<u64>, error>;
+}

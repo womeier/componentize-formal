@@ -40,7 +40,9 @@ it refuses to run without:
 Worlds come from `bindgen/tests/wit/good` -- every shape the gate accepts, one
 fixture each -- and the run ends by checking that each variant of
 `plan.rs`'s `Repr` was reached, so a representation added without a fixture
-fails here instead of going quietly untested.
+fails here instead of going quietly untested. A representation that has no
+round trip to run says so in `EXCLUDED`, with what runs it instead; `option`
+and `result` are there, because a sum is several core values rather than one.
 
 Needs the generator and `wasmtime`:
 
@@ -66,6 +68,18 @@ REQUIRED = {
     "Bool": {"0", "1"},
     "Enum": None,
 }
+
+# The representations this harness cannot carry, and why. A round trip needs
+# the value to be one core value in each direction, and a sum is not one: its
+# canonical form is a discriminant and a payload at byte offsets, so the
+# conversion writes into memory instead of returning something to compare.
+# Both of its directions run against the real backend instead, in
+# `checks/backend.py`'s sum cases -- which is a weaker statement than an
+# identity, and is the one being made.
+#
+# Listed rather than ignored: a variant that is neither required nor excluded
+# fails the parse below.
+EXCLUDED = {"Sum"}
 
 # Every variant of `Repr` has to be reached by some fixture. The map is from
 # the variant name in plan.rs to what a pair from it looks like in the
@@ -220,7 +234,18 @@ def check_world(generator: Path, world: Path, into: Path) -> tuple[list[str], se
     reached: set[str] = set()
     module, manifest = harness(generator, world, into)
     if not manifest.get("pair"):
-        return [f"{world.name}: the harness has no conversions in it"], reached
+        # Nothing to run is an answer only when the manifest says what it
+        # passed over and why; an empty manifest with no reason in it is a
+        # generator that emitted nothing, which is what this check is for.
+        skipped = manifest.get("skipped")
+        if not skipped:
+            return [f"{world.name}: the harness has no conversions in it"], reached
+        for entry in skipped:
+            print(
+                f"roundtrip: {world.name} carries only `{entry['wit']}`, which has "
+                f"no round trip: {entry['reason']}"
+            )
+        return problems, reached
 
     for pair in manifest["pair"]:
         variant = classify(pair)
@@ -286,14 +311,16 @@ def main() -> int:
     if not fixtures:
         raise SystemExit(f"roundtrip: no fixtures in {args.fixtures}")
 
-    unknown = repr_variants(args.plan) - VARIANTS
+    unknown = repr_variants(args.plan) - VARIANTS - EXCLUDED
     if unknown:
         raise SystemExit(
             f"roundtrip: plan.rs has representation(s) {sorted(unknown)} that "
             "this check does not know how to recognise or what boundary values "
             "to insist on. Add them to REQUIRED and `classify`, with a fixture "
             "in the good set that uses them -- a conversion nothing round-trips "
-            "is one the import work will find out about the hard way."
+            "is one the import work will find out about the hard way. If the "
+            "representation cannot round-trip at all, say so in EXCLUDED with "
+            "what runs it instead."
         )
 
     problems: list[str] = []

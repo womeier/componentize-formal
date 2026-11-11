@@ -1,0 +1,15 @@
+package local:backend;
+
+// A `result` as a value, in both positions. This is the one case where *both*
+// halves of the sum carry a payload, so both are boxed and the case is the
+// ordinal in the block's first cell rather than the tag bit -- and those two
+// ordinals, `inl` and `inr`, are the one representation fact upstream could
+// swap under us (checks/representation.py measures them against each other).
+//
+// The halves are swapped and each is computed from the other's payload, so the
+// mapping is pinned in both directions at once: `ok` maps to `inl` and `err`
+// to `inr`, and exchanging them exchanges every answer below.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export flip: func(x: result<u64, bool>) -> result<result<u64, bool>, error>;
+}

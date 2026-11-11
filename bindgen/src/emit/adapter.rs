@@ -10,7 +10,7 @@ use std::fmt::Write;
 
 use wit_parser::Int;
 
-use super::plan::{Discriminants, Export, Plan, Repr, ADAPTER_ALIGN};
+use super::plan::{Cells, Discriminants, Export, Plan, Repr, ADAPTER_ALIGN};
 use super::{comment, convert, BACKEND_MODULE, MARKER};
 use crate::repr;
 use crate::repr::exports;
@@ -108,18 +108,33 @@ pub fn adapter(plan: &Plan) -> String {
             ),
         ],
     ));
+    // A scalar ok is one store at the payload offset. A sum is a
+    // discriminant and a payload of its own, written at offsets inside that
+    // one -- so the function takes the Rocq value rather than a lifted core
+    // value, and `convert` writes the bytes.
     writeln!(
         out,
         "  (func $ok (param $ret i32) (param $val {ty})\n\
-         \x20   ({store_tag} (local.get $ret) (i32.const {ok}))\n\
-         \x20   ({store} offset={payload} (local.get $ret) (local.get $val)))\n",
-        ty = convert::core_type(&e.ok),
-        store_tag = store(l.ret_tag),
+         \x20   ({store_tag} (local.get $ret) (i32.const {ok}))",
+        ty = match &e.ok {
+            Repr::Sum(_) => "i32",
+            ok => convert::core_type(ok),
+        },
+        store_tag = convert::store_op(l.ret_tag),
         ok = d.ok,
-        store = payload_store(&e.ok),
-        payload = l.payload,
     )
     .unwrap();
+    for line in convert::store_canonical(
+        &e.ok,
+        convert::Base("(local.get $ret)"),
+        l.payload,
+        "(local.get $val)",
+    ) {
+        writeln!(out, "    {line}").unwrap();
+    }
+    // The closing paren of the last statement doubles as the function's.
+    out.truncate(out.trim_end().len());
+    out.push_str(")\n\n");
 
     out.push_str(&comment::wat(
         "  ",
@@ -135,9 +150,9 @@ pub fn adapter(plan: &Plan) -> String {
         "  (func $err (param $ret i32) (param $case i32)\n\
          \x20   ({store_tag} (local.get $ret) (i32.const {err}))\n\
          \x20   ({store_case} offset={payload} (local.get $ret) (local.get $case)))",
-        store_tag = store(l.ret_tag),
+        store_tag = convert::store_op(l.ret_tag),
         err = d.err,
-        store_case = store(l.err_tag),
+        store_case = convert::store_op(l.err_tag),
         payload = l.payload,
     )
     .unwrap();
@@ -146,19 +161,56 @@ pub fn adapter(plan: &Plan) -> String {
     let params = e
         .params
         .iter()
-        .map(|p| format!("(param ${} {})", p.rocq_name, p.wasm))
+        .flat_map(|p| &p.slots)
+        .map(|s| format!("(param ${} {})", s.local, s.wasm))
         .collect::<Vec<_>>()
         .join(" ");
+    // A parameter the canonical ABI flattens into several values has nothing
+    // in the WIT file naming them, so the mapping is written down here rather
+    // than left to be inferred from the order.
+    let flattened: Vec<String> = e
+        .params
+        .iter()
+        .filter(|p| p.slots.len() > 1)
+        .map(|p| {
+            format!(
+                "`{}: {}` arrives in {}.",
+                p.wit_name,
+                p.repr.rocq_type(),
+                p.slots
+                    .iter()
+                    .map(|s| format!("${}", s.local))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+        .collect();
+    // The blank line before the function comes from the comment when there is
+    // one, so that the two spellings are the same shape.
+    let lead = match flattened.is_empty() {
+        true => "\n",
+        false => "",
+    };
+    if !flattened.is_empty() {
+        out.push('\n');
+        let mut lines = vec![
+            "The canonical ABI flattens a sum into a discriminant and the".to_string(),
+            "payload slots its two cases share, outermost first:".into(),
+            String::new(),
+        ];
+        lines.extend(flattened);
+        out.push_str(&comment::wat("  ", &lines));
+    }
     writeln!(
         out,
-        "\n  (func (export \"{}\") {params} (result i32)",
+        "{lead}  (func (export \"{}\") {params} (result i32)",
         e.wit_name
     )
     .unwrap();
     out.push_str("    (local $ret i32)\n");
     for p in &e.params {
-        if let Some(local) = &p.box_local {
-            writeln!(out, "    (local ${local} i32)").unwrap();
+        if let Some(block) = &p.block {
+            writeln!(out, "    (local ${} i32)", block.local).unwrap();
         }
     }
     out.push_str("    (local $closure i32)\n");
@@ -166,9 +218,7 @@ pub fn adapter(plan: &Plan) -> String {
     reserve(&mut out, e);
     if let Some(case) = d.out_of_range {
         for p in &e.params {
-            if p.boxed() {
-                range_check(&mut out, p, case);
-            }
+            range_checks(&mut out, p, case);
         }
     }
     for p in &e.params {
@@ -181,14 +231,14 @@ pub fn adapter(plan: &Plan) -> String {
     out
 }
 
-/// Take the return area, and a box per boxed argument, off the backend's own
-/// bump pointer.
+/// Take the return area, and the cells each argument's lowering needs, off the
+/// backend's own bump pointer.
 fn reserve(out: &mut String, e: &Export) {
     let l = &e.layout;
-    let boxed = e.params.iter().filter(|p| p.boxed()).count();
+    let blocks: Vec<&super::plan::Param> = e.params.iter().filter(|p| p.has_block()).collect();
 
     let mut lines = vec![
-        match boxed {
+        match blocks.len() {
             0 => "The return area comes off the same bump".to_string(),
             1 => "The return area and the boxed argument come off the same bump".to_string(),
             n => format!("The return area and the {n} boxed arguments come off the same bump"),
@@ -202,7 +252,7 @@ fn reserve(out: &mut String, e: &Export) {
         String::new(),
     ];
     // Why it is all taken up front rather than one box reused per argument.
-    if boxed > 1 {
+    if blocks.len() > 1 {
         lines.extend([
             "Every box is reserved here and none is reused: applying an".to_string(),
             "argument captures its box by address, and a later application".into(),
@@ -236,10 +286,11 @@ fn reserve(out: &mut String, e: &Export) {
     .unwrap();
     out.push_str("    (local.set $ret (global.get $mem_ptr))\n");
     for p in &e.params {
-        if let (Some(local), Some(offset)) = (&p.box_local, p.box_offset) {
+        if let Some(block) = &p.block {
             writeln!(
                 out,
-                "    (local.set ${local} (i32.add (local.get $ret) (i32.const {offset})))"
+                "    (local.set ${} (i32.add (local.get $ret) (i32.const {})))",
+                block.local, block.offset
             )
             .unwrap();
         }
@@ -270,63 +321,195 @@ fn reserve(out: &mut String, e: &Export) {
 
 /// A `u64` of 2^63 or more has no `Uint63.int`.
 ///
-/// One check per parameter that can carry one. No parameter is exempt and one
+/// One check per `u64` a parameter can carry. No parameter is exempt and one
 /// of them being in range says nothing about the others, so they are not
 /// folded together -- and all of them run before `main_function`, so a
 /// rejected call has not allocated anything.
-fn range_check(out: &mut String, param: &super::plan::Param, case: u32) {
-    let p = &param.rocq_name;
-    out.push('\n');
-    out.push_str(&comment::wat(
-        "    ",
-        &[
-            format!("`{p}` as a `u64` of 2^63 or more has no `Uint63.int`, so it is"),
-            "rejected before the program runs rather than silently losing its".into(),
-            "top bit. Read as an i64 that is exactly the negative half.".into(),
-        ],
-    ));
-    write!(
-        out,
-        "    (if (i64.lt_s (local.get ${p}) (i64.const 0))\n\
-         \x20     (then\n\
-         \x20       (call $err (local.get $ret) (i32.const {case}))\n\
-         \x20       (return (local.get $ret))))\n",
-    )
-    .unwrap();
+///
+/// A `u64` inside a sum is checked under the discriminants that make it live.
+/// Not an optimisation: the canonical ABI zero-pads the flat slots a case does
+/// not use, so checking an unused payload slot unconditionally would pass --
+/// but reporting a *failure* read out of a slot that carries no value would be
+/// an answer invented out of padding, and the guard is what rules that out.
+fn range_checks(out: &mut String, param: &super::plan::Param, case: u32) {
+    for (what, guards, slot) in int63s(param) {
+        out.push('\n');
+        out.push_str(&comment::wat(
+            "    ",
+            &[
+                format!("{what} as a `u64` of 2^63 or more has no `Uint63.int`, so it"),
+                "is rejected before the program runs rather than silently losing".into(),
+                "its top bit. Read as an i64 that is exactly the negative half.".into(),
+            ],
+        ));
+        let check = format!(
+            "(if (i64.lt_s (local.get ${slot}) (i64.const 0))\n\
+             \x20 (then\n\
+             \x20   (call $err (local.get $ret) (i32.const {case}))\n\
+             \x20   (return (local.get $ret))))",
+        );
+        out.push_str(&guarded(&guards, &check, "    "));
+    }
+}
+
+/// Every `u64` a parameter can carry: how to describe it, the discriminants
+/// that have to hold for it to be one, and the slot it arrives in.
+fn int63s(param: &super::plan::Param) -> Vec<(String, Vec<String>, String)> {
+    fn walk(
+        repr: &Repr,
+        slots: &[super::plan::Slot],
+        what: String,
+        guards: Vec<String>,
+        found: &mut Vec<(String, Vec<String>, String)>,
+    ) {
+        match repr {
+            Repr::Int63 => found.push((what, guards, slots[0].local.clone())),
+            Repr::Bool | Repr::Enum { .. } => {}
+            Repr::Sum(sum) => {
+                for (discriminant, case) in sum.cases.iter().enumerate() {
+                    let Some(payload) = &case.payload else {
+                        continue;
+                    };
+                    let mut guards = guards.clone();
+                    guards.push(format!(
+                        "(i32.eq (local.get ${}) (i32.const {discriminant}))",
+                        slots[0].local
+                    ));
+                    walk(
+                        payload,
+                        &slots[1..],
+                        format!("{what}'s `{}` payload", case.wit_name),
+                        guards,
+                        found,
+                    );
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(
+        &param.repr,
+        &param.slots,
+        format!("`{}`", param.wit_name),
+        Vec::new(),
+        &mut found,
+    );
+    found
+}
+
+/// A statement under the conditions that have to hold for it to run, one
+/// `if` per condition so that the nesting reads as the case analysis it is.
+///
+/// The closing parens fold onto the last line, which is how the hand-written
+/// adapters close a nested `if` -- and `checks/generated.py` compares tokens,
+/// so an extra line of its own would be a difference in nothing.
+fn guarded(guards: &[String], statement: &str, indent: &str) -> String {
+    let mut out = String::new();
+    for (depth, guard) in guards.iter().enumerate() {
+        let pad = "  ".repeat(depth * 2);
+        writeln!(out, "{indent}{pad}(if {guard}").unwrap();
+        writeln!(out, "{indent}{pad}  (then").unwrap();
+    }
+    let pad = "  ".repeat(guards.len() * 2);
+    let lines: Vec<&str> = statement.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        write!(out, "{indent}{pad}{line}").unwrap();
+        match i + 1 == lines.len() {
+            // `(then` and `(if`, innermost first.
+            true => writeln!(out, "{}", ")".repeat(2 * guards.len())).unwrap(),
+            false => out.push('\n'),
+        }
+    }
+    out
 }
 
 /// Hold the incoming value to what its WIT type promises.
+///
+/// A discriminant out of range names no constructor. The canonical ABI says a
+/// conforming caller cannot send one, and trapping is what the component model
+/// allows for a caller that does anyway -- strictly better than building a
+/// value the Rocq side has no case for and matching on it.
+///
+/// Nested discriminants are checked under the ones that select them, for the
+/// reason `range_checks` gives: the slots of a case that was not sent are
+/// padding, and a conclusion drawn from padding is invented.
 fn validate_param(out: &mut String, param: &super::plan::Param) {
-    let p = &param.rocq_name;
-    match &param.repr {
-        Repr::Enum {
-            cases, rocq_type, ..
-        } => {
-            out.push('\n');
-            out.push_str(&comment::wat(
-                "    ",
-                &[
-                    format!(
-                        "`{rocq_type}` has {cases} constructors, so a discriminant of {cases} or"
-                    ),
-                    "more names none of them. The canonical ABI says a conforming".into(),
-                    "caller cannot send one, and trapping is what the component model".into(),
-                    "allows for a caller that does anyway -- strictly better than".into(),
-                    "building a value the Rocq side has no case for and matching on it.".into(),
-                ],
-            ));
-            write!(
-                out,
-                "    (if (i32.ge_u (local.get ${p}) (i32.const {cases}))\n\
-                 \x20     (then unreachable))\n",
-            )
-            .unwrap()
-        }
-        // `bool` is normalised rather than trapped on, in `lower` below: the
-        // canonical ABI lifts any non-zero byte as `true`, so clamping is what
-        // it asks for.
-        Repr::Bool | Repr::Int63 => {}
+    for (lines, guards, statement) in bounds(param) {
+        out.push('\n');
+        out.push_str(&comment::wat("    ", &lines));
+        out.push_str(&guarded(&guards, &statement, "    "));
     }
+}
+
+/// Every discriminant a parameter carries that could be out of range: what to
+/// say about it, the discriminants that select it, and the trap.
+fn bounds(param: &super::plan::Param) -> Vec<(Vec<String>, Vec<String>, String)> {
+    fn trap(slot: &str, cases: usize) -> String {
+        format!(
+            "(if (i32.ge_u (local.get ${slot}) (i32.const {cases}))\n\
+             \x20 (then unreachable))",
+        )
+    }
+    fn walk(
+        repr: &Repr,
+        slots: &[super::plan::Slot],
+        what: String,
+        guards: Vec<String>,
+        found: &mut Vec<(Vec<String>, Vec<String>, String)>,
+    ) {
+        match repr {
+            // `bool` is normalised rather than trapped on, in `to_rocq`: the
+            // canonical ABI lifts any non-zero byte as `true`, so clamping is
+            // what it asks for.
+            Repr::Bool | Repr::Int63 => {}
+            Repr::Enum {
+                cases, rocq_type, ..
+            } => found.push((
+                vec![
+                    format!("`{rocq_type}` has {cases} constructors, so {what} being"),
+                    format!("{cases} or more names none of them."),
+                ],
+                guards,
+                trap(&slots[0].local, *cases),
+            )),
+            Repr::Sum(sum) => {
+                found.push((
+                    vec![
+                        format!("`{}` has two cases, so {what} being 2 or", sum.wit),
+                        "more names neither of them.".into(),
+                    ],
+                    guards.clone(),
+                    trap(&slots[0].local, sum.cases.len()),
+                ));
+                for (discriminant, case) in sum.cases.iter().enumerate() {
+                    let Some(payload) = &case.payload else {
+                        continue;
+                    };
+                    let mut guards = guards.clone();
+                    guards.push(format!(
+                        "(i32.eq (local.get ${}) (i32.const {discriminant}))",
+                        slots[0].local
+                    ));
+                    walk(
+                        payload,
+                        &slots[1..],
+                        format!("the discriminant of its `{}` payload", case.wit_name),
+                        guards,
+                        found,
+                    );
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(
+        &param.repr,
+        &param.slots,
+        format!("`{}`", param.wit_name),
+        Vec::new(),
+        &mut found,
+    );
+    found
 }
 
 /// Run the program, apply the arguments one at a time, and check the allocator
@@ -383,34 +566,62 @@ fn call(out: &mut String, e: &Export) {
         let last = i + 1 == n;
 
         // Canonical ABI -> CertiRocq, the direction an export goes. The
-        // prologue is the store into the box, for a representation that has
-        // one; `argument` is what the application is handed.
+        // prologue is the store into the cell, for a representation that has
+        // one; the value is what the application is handed.
+        let base = match &p.block {
+            Some(block) => format!("(local.get ${})", block.local),
+            None => String::new(),
+        };
         let lowered = convert::to_rocq(
             &p.repr,
-            &format!("(local.get ${})", p.rocq_name),
-            p.box_local
-                .as_ref()
-                .map(|local| format!("(local.get ${local})"))
-                .as_deref(),
+            &convert::Flat::locals(&p.slots),
+            match &p.block {
+                Some(block) => &block.cells,
+                None => &Cells::Nothing,
+            },
+            convert::Base(&base),
         );
-        if !lowered.prologue.is_empty() {
-            out.push('\n');
-            let mut lines = vec![];
-            if n > 1 {
-                lines.push(format!("Argument {} of {n}, `{}`.", i + 1, p.wit_name));
+        let mut lines = vec![];
+        if n > 1 {
+            lines.push(format!("Argument {} of {n}, `{}`.", i + 1, p.wit_name));
+        }
+        match &p.repr {
+            // A sum is built inline rather than in a prologue: the
+            // discriminant picks the constructor, so the `if` *is* the value.
+            Repr::Sum(sum) => {
+                lines.extend([
+                    format!("`{}` is built here. The discriminant picks the", sum.wit),
+                    "constructor, so only the case that was sent is written:".into(),
+                ]);
+                lines.extend(sum.cases.iter().enumerate().map(|(d, case)| {
+                    match (&case.payload, case.tag) {
+                        (_, super::plan::CtorTag::Immediate(immediate)) => {
+                            format!("{d} -> `{}`, the immediate {immediate}.", case.ctor)
+                        }
+                        (_, super::plan::CtorTag::Boxed(ordinal)) => {
+                            format!("{d} -> `{}`, a pointer to [{ordinal}, payload].", case.ctor)
+                        }
+                    }
+                }));
+                out.push('\n');
+                out.push_str(&comment::wat("    ", &lines));
             }
-            lines.extend([
-                format!(
-                    "A primitive int is boxed: a pointer to its {}-byte payload,",
-                    repr::PRIM_PAYLOAD_SIZE
-                ),
-                "which is what gets passed, not the value. repr.rs".into(),
-                "PRIM_PAYLOAD_SIZE.".into(),
-            ]);
-            out.push_str(&comment::wat("    ", &lines));
-            for line in &lowered.prologue {
-                writeln!(out, "    {line}").unwrap();
+            _ if !lowered.prologue.is_empty() => {
+                lines.extend([
+                    format!(
+                        "A primitive int is boxed: a pointer to its {}-byte payload,",
+                        repr::PRIM_PAYLOAD_SIZE
+                    ),
+                    "which is what gets passed, not the value. repr.rs".into(),
+                    "PRIM_PAYLOAD_SIZE.".into(),
+                ]);
+                out.push('\n');
+                out.push_str(&comment::wat("    ", &lines));
+                for line in &lowered.prologue {
+                    writeln!(out, "    {line}").unwrap();
+                }
             }
+            _ => {}
         }
 
         out.push('\n');
@@ -450,7 +661,7 @@ fn call(out: &mut String, e: &Export) {
              \x20     (i32.load offset={func} (local.get $closure)))\n\n",
             env = repr::CLOSURE_ENV_OFFSET,
             func = repr::CLOSURE_FUNC_IDX_OFFSET,
-            lowered = lowered.value,
+            lowered = lowered.value.replace('\n', "\n      "),
         )
         .unwrap();
 
@@ -507,12 +718,30 @@ fn lift(out: &mut String, e: &Export) {
                 "allocated to return a nullary constructor, and `2*ord+1`".into(),
                 "inverts to a shift.".into(),
             ],
+            Repr::Sum(sum) => vec![
+                format!(
+                    "`{}` holds the `{}` itself -- a pointer for the case",
+                    exports::RESULT,
+                    sum.rocq_type
+                ),
+                "that carries a payload, an immediate for the one that does".into(),
+                "not -- and `$ok` writes whichever it is into the return area.".into(),
+            ],
         },
     ));
     // CertiRocq -> canonical ABI, the direction an export's result goes --
     // and the one an import wrapper's *arguments* would go, which is why it
     // is emitted from `convert` rather than from here.
-    let lifted = convert::from_rocq(&e.ok, &format!("(global.get ${})", exports::RESULT));
+    //
+    // A sum has no single core value to lift into, so `$ok` is handed the Rocq
+    // value and does the writing (`convert::store_canonical`).
+    let lifted = match &e.ok {
+        Repr::Sum(_) => convert::Conversion {
+            prologue: Vec::new(),
+            value: format!("(global.get ${})", exports::RESULT),
+        },
+        ok => convert::from_rocq(ok, &format!("(global.get ${})", exports::RESULT)),
+    };
     for line in &lifted.prologue {
         writeln!(out, "    {line}").unwrap();
     }
@@ -532,28 +761,6 @@ fn error_cases(d: &Discriminants) -> String {
         cases.push(format!("out-of-range = {case}"));
     }
     cases.join(", ")
-}
-
-/// The store the ok payload needs, which is the payload's own width rather
-/// than the return area's.
-fn payload_store(ok: &Repr) -> String {
-    match ok {
-        Repr::Int63 => "i64.store".into(),
-        // A `bool` is one byte in the canonical ABI; an enum's payload is its
-        // discriminant, as wide as its case count makes it.
-        Repr::Bool => store(Int::U8),
-        Repr::Enum { tag, .. } => store(*tag),
-    }
-}
-
-/// The store instruction for an integer of this width.
-fn store(int: Int) -> String {
-    match int {
-        Int::U8 => "i32.store8".into(),
-        Int::U16 => "i32.store16".into(),
-        Int::U32 => "i32.store".into(),
-        Int::U64 => "i64.store".into(),
-    }
 }
 
 fn int_bytes(int: Int) -> u32 {

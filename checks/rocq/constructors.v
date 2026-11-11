@@ -52,3 +52,37 @@ CertiRocq Compile Wasm --output "ctor-mixed-first"   to_m_first.
 CertiRocq Compile Wasm --output "ctor-mixed-last"    to_m_last.
 CertiRocq Compile Wasm --output "ctor-mixed-boxed-a" to_m_boxed_a.
 CertiRocq Compile Wasm --output "ctor-mixed-boxed-b" to_m_boxed_b.
+
+(* Stdlib's `option` and `sum`: what the generator carries a WIT `option` and
+ * `result` in (TODO.md#option-result). These are not declared here, which is
+ * the point -- they come out of the standard library through MetaRocq's
+ * erasure, so a remapping like `bool`'s would apply to them without anything
+ * in this repository mentioning them.
+ *
+ * `option` is the shape a remapping cannot disturb: `Some` is its only boxed
+ * constructor and `None` its only nullary one, so per-class numbering gives
+ * each of them ordinal 0 however they are ordered. `sum` is the one to watch
+ * -- `inl` and `inr` are both boxed, so they are ordinals 0 and 1 in
+ * declaration order, and a swap would silently exchange the ok and err halves
+ * of a WIT `result`. *)
+Definition to_none (b : bool) : option bool := None.
+Definition to_some (b : bool) : option bool := Some b.
+Definition to_inl  (b : bool) : bool + bool := inl b.
+Definition to_inr  (b : bool) : bool + bool := inr b.
+
+(* The other half of carrying a sum: telling a pointer from an immediate. The
+ * backend's own `match` does it with `x & 1`, zero meaning boxed
+ * (`LambdaANF_to_Wasm.v:349-356`), and a lift that reads an `option` has to
+ * make the same test -- so this is compiled to read the mask back out of it
+ * rather than to take the source's word. *)
+Definition un_option (o : option bool) : bool :=
+  match o with
+  | Some b => b
+  | None => false
+  end.
+
+CertiRocq Compile Wasm --output "ctor-none" to_none.
+CertiRocq Compile Wasm --output "ctor-some" to_some.
+CertiRocq Compile Wasm --output "ctor-inl"  to_inl.
+CertiRocq Compile Wasm --output "ctor-inr"  to_inr.
+CertiRocq Compile Wasm --output "ctor-match-option" un_option.

@@ -100,6 +100,43 @@ world wrapper-world {
 }
 "#;
 
+/// `option<u64>` in both positions: the sum whose two cases are one of each
+/// kind, carrying the payload that needs a range check.
+const MAYBE: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export maybe: func(x: option<u64>) -> result<option<u64>, error>;
+}
+"#;
+
+/// The same sum in both positions, for whichever of the four spellings is
+/// being asked about.
+fn sums_world(ty: &str) -> String {
+    format!(
+        r#"package local:demo;
+world wrapper-world {{
+  use certirocq:abi/errors@0.1.0.{{error}};
+  export f: func(x: {ty}) -> result<{ty}, error>;
+}}
+"#
+    )
+}
+
+/// Each parameter's flat slots as `(local, wasm type)` pairs.
+fn slots(p: &componentize_formal::emit::plan::Param) -> Vec<(&str, &str)> {
+    p.slots.iter().map(|s| (s.local.as_str(), s.wasm)).collect()
+}
+
+/// Each parameter's block as `(offset, local)`, or `None` where it needs no
+/// memory.
+fn blocks(plan: &Plan) -> Vec<Option<(u32, &str)>> {
+    plan.export
+        .params
+        .iter()
+        .map(|p| p.block.as_ref().map(|b| (b.offset, b.local.as_str())))
+        .collect()
+}
+
 /// `result<u64, error>` is 16 bytes at align 8, discriminant at 0 and payload
 /// at 8 -- and the adapter reserves the 16, rounded up, plus 8 for the boxed
 /// argument. These are the numbers the hand-written plus1 adapter contains.
@@ -110,18 +147,14 @@ fn a_u64_result_is_sixteen_bytes_at_align_eight() {
     assert_eq!((l.ret_size, l.ret_align, l.payload), (16, 8, 8));
     assert_eq!(l.reserve, 24, "16 for the return area, 8 for the boxed int");
     let p = &plan.export.params[0];
-    assert_eq!(
-        p.box_offset,
-        Some(16),
-        "the argument sits above the return area"
-    );
-    assert_eq!(p.wasm, "i64");
+    let block = p.block.as_ref().expect("a boxed int is built in memory");
+    assert_eq!(block.offset, 16, "the argument sits above the return area");
+    assert_eq!(slots(p), [("val", "i64")]);
     assert_eq!(p.repr, Repr::Int63);
     assert_eq!(
-        p.box_local.as_deref(),
-        Some("arg"),
-        "one parameter, so the box local is the `$arg` the hand-written plus1 \
-         adapter uses"
+        block.local, "arg",
+        "one parameter, so the block local is the `$arg` the hand-written \
+         plus1 adapter uses"
     );
 }
 
@@ -135,9 +168,8 @@ fn a_bool_result_is_two_bytes_at_align_one() {
     assert_eq!((l.ret_size, l.ret_align, l.payload), (2, 1, 1));
     assert_eq!(l.reserve, 8, "rounded up: mem_ptr has to stay 4-aligned");
     let p = &plan.export.params[0];
-    assert_eq!(p.box_offset, None, "an immediate needs no heap");
-    assert_eq!(p.box_local, None);
-    assert_eq!(p.wasm, "i32");
+    assert!(!p.has_block(), "an immediate needs no heap");
+    assert_eq!(slots(p), [("b", "i32")]);
 }
 
 /// Every boxed parameter gets its own box, all of them live at once: the first
@@ -152,18 +184,10 @@ fn each_boxed_parameter_gets_its_own_box() {
         l.reserve, 32,
         "16 for the return area, then 8 per boxed argument"
     );
-    let offsets: Vec<_> = plan.export.params.iter().map(|p| p.box_offset).collect();
-    assert_eq!(offsets, [Some(16), Some(24)]);
-    let locals: Vec<_> = plan
-        .export
-        .params
-        .iter()
-        .map(|p| p.box_local.clone())
-        .collect();
     assert_eq!(
-        locals,
-        [Some("arg_a".to_string()), Some("arg_b".to_string())],
-        "with several parameters each box is named after its own"
+        blocks(&plan),
+        [Some((16, "arg_a")), Some((24, "arg_b"))],
+        "with several parameters each block is named after its own"
     );
 }
 
@@ -175,15 +199,7 @@ fn an_immediate_parameter_takes_no_box() {
     let plan = plan_for("pick", MIXED);
     let l = &plan.export.layout;
     assert_eq!(l.reserve, 24, "16 for the return area, 8 for the one box");
-    let offsets: Vec<_> = plan.export.params.iter().map(|p| p.box_offset).collect();
-    assert_eq!(offsets, [None, Some(16)]);
-    let locals: Vec<_> = plan
-        .export
-        .params
-        .iter()
-        .map(|p| p.box_local.clone())
-        .collect();
-    assert_eq!(locals, [None, Some("arg_val".to_string())]);
+    assert_eq!(blocks(&plan), [None, Some((16, "arg_val"))]);
 }
 
 /// The Module Type is curried, one arrow per parameter, because that is what
@@ -279,37 +295,145 @@ fn a_u64_result_needs_no_range_check() {
     assert!(adapter.contains("(i64.load"), "{adapter}");
 }
 
-/// The emitters do not trust the gate. An `option` that reached them anyway --
-/// the gate and the plan are separate code and can drift -- is refused with a
-/// message that says which layer was supposed to catch it, rather than
-/// emitting an adapter for a type with no representation.
+/// `$ok` is handed a value that is already converted, and stores it. Both
+/// halves of that convention are in the same adapter and they have to agree:
+/// the hand-written `examples/plus1` dereferences the boxed int at the call
+/// site, so a `$ok` that dereferenced again would load through the payload --
+/// which `wasm-tools` rejects outright for an `i64` address, and would be a
+/// wrong answer rather than an error if the widths happened to line up.
 #[test]
-fn an_option_is_refused_by_the_emitter_too() {
-    let err = refusal(
-        "option",
-        r#"package local:demo;
-world wrapper-world {
-  use certirocq:abi/errors@0.1.0.{error};
-  export unwrap: func(x: option<u64>) -> result<u64, error>;
-}
-"#,
+fn a_scalar_ok_is_converted_once() {
+    let adapter = emit::adapter::adapter(&plan_for("plus1", PLUS1));
+    assert!(
+        adapter.contains(
+            "(func $ok (param $ret i32) (param $val i64)\n    \
+             (i32.store8 (local.get $ret) (i32.const 0))\n    \
+             (i64.store offset=8 (local.get $ret) (local.get $val)))"
+        ),
+        "{adapter}"
     );
-    assert!(err.contains("option"), "{err}");
-    assert!(err.contains("no Rocq counterpart"), "{err}");
-    assert!(err.contains("the gate should have rejected"), "{err}");
+    assert!(
+        adapter.contains("(call $ok (local.get $ret) (i64.load (global.get $result)))"),
+        "{adapter}"
+    );
 
-    // Same for the result position, which is a different call into `repr_of`.
-    let err = refusal(
-        "nested-option",
-        r#"package local:demo;
-world wrapper-world {
-  use certirocq:abi/errors@0.1.0.{error};
-  export lookup: func(k: u64) -> result<option<u64>, error>;
-}
-"#,
+    // A sum is the other convention: no single core value to convert, so
+    // `$ok` takes the Rocq value and reads the payload out of it itself.
+    let adapter = emit::adapter::adapter(&plan_for("maybe", MAYBE));
+    assert!(
+        adapter.contains("(func $ok (param $ret i32) (param $val i32)"),
+        "{adapter}"
     );
-    assert!(err.contains("no Rocq counterpart"), "{err}");
-    assert!(err.contains("the result of `lookup`"), "{err}");
+    assert!(
+        adapter.contains("(call $ok (local.get $ret) (global.get $result))"),
+        "{adapter}"
+    );
+    assert!(
+        adapter.contains("(i64.load (i32.load offset=4 (local.get $val)))"),
+        "the payload is dereferenced inside `$ok` instead:\n{adapter}"
+    );
+}
+
+/// A sum is several core values, not one: the canonical ABI flattens it into
+/// a discriminant and the slots its cases share. A parameter list with one
+/// slot for `x` would be a module the host refuses to link.
+#[test]
+fn an_option_parameter_is_a_discriminant_and_a_payload() {
+    let plan = plan_for("maybe", MAYBE);
+    let p = &plan.export.params[0];
+    assert_eq!(slots(p), [("x_f0", "i32"), ("x_f1", "i64")]);
+    let adapter = emit::adapter::adapter(&plan);
+    assert!(
+        adapter.contains(r#"(func (export "maybe") (param $x_f0 i32) (param $x_f1 i64)"#),
+        "{adapter}"
+    );
+}
+
+/// Which Rocq constructor carries which WIT case, for all four spellings of a
+/// two-case sum. Three of the four are `option`, and the two `result` rows map
+/// `ok` to opposite constructors -- so the table is the behaviour, and a
+/// change to it is a change to what the user's implementation has to return.
+#[test]
+fn each_sum_spelling_maps_its_cases() {
+    let mapping = |name: &str, wit: &str| {
+        let plan = plan_for(name, &sums_world(wit));
+        let interface = emit::rocq::interface(&plan);
+        interface
+            .lines()
+            .find(|l| l.contains("is carried as"))
+            .unwrap_or_else(|| panic!("no mapping comment:\n{interface}"))
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        mapping("option", "option<u64>"),
+        "(* `option<u64>` is carried as `option int`: `none` is `None`, `some` is `Some` *)"
+    );
+    assert_eq!(
+        mapping("both", "result<u64, bool>"),
+        "(* `result<u64, bool>` is carried as `sum int bool`: `ok` is `inl`, `err` is `inr` *)"
+    );
+    assert_eq!(
+        mapping("ok-only", "result<u64>"),
+        "(* `result<u64>` is carried as `option int`: `ok` is `Some`, `err` is `None` *)"
+    );
+    assert_eq!(
+        mapping("err-only", "result<_, bool>"),
+        "(* `result<_, bool>` is carried as `option bool`: `ok` is `None`, `err` is `Some` *)"
+    );
+}
+
+/// The payload's import follows the payload. A signature that says `int`
+/// without `Uint63` loaded does not compile, and the user would have to read
+/// Rocq's output to find out why -- so the import is decided by what the
+/// signature carries at any depth rather than at the top.
+#[test]
+fn an_int_inside_a_sum_still_needs_its_import() {
+    let interface = emit::rocq::interface(&plan_for("maybe", MAYBE));
+    assert!(
+        interface.contains("From Stdlib Require Import Uint63."),
+        "{interface}"
+    );
+    assert!(
+        interface.contains("Parameter maybe : option int -> option int."),
+        "{interface}"
+    );
+
+    // And is still absent when nothing carries one.
+    let interface = emit::rocq::interface(&plan_for("err-only", &sums_world("result<_, bool>")));
+    assert!(!interface.contains("Uint63"), "{interface}");
+}
+
+/// A range check on a payload runs only under the discriminant that makes the
+/// payload live. The canonical ABI zero-pads the slots of the case that was
+/// not sent, so an unguarded check would read padding -- and report an
+/// out-of-range `u64` for a `none` that carries no integer at all.
+#[test]
+fn a_payload_is_checked_only_when_it_is_there() {
+    let adapter = emit::adapter::adapter(&plan_for("maybe", MAYBE));
+    let check = adapter
+        .find("(i64.lt_s")
+        .unwrap_or_else(|| panic!("no range check:\n{adapter}"));
+    let guard = adapter
+        .find("(if (i32.eq (local.get $x_f0) (i32.const 1))")
+        .unwrap_or_else(|| panic!("the check is not guarded:\n{adapter}"));
+    assert!(
+        guard < check,
+        "the guard has to come first, or the check reads padding:\n{adapter}"
+    );
+}
+
+/// A discriminant naming neither case cannot be lowered -- there is no
+/// constructor to build -- so it traps rather than falling into one of the
+/// cases. The bound is the sum's own case count, read where the type is.
+#[test]
+fn a_discriminant_past_the_last_case_traps() {
+    let adapter = emit::adapter::adapter(&plan_for("maybe", MAYBE));
+    assert!(
+        adapter
+            .contains("(if (i32.ge_u (local.get $x_f0) (i32.const 2))\n      (then unreachable))"),
+        "{adapter}"
+    );
 }
 
 /// Every parameter that can be out of range gets its own check, and there is

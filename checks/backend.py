@@ -27,6 +27,11 @@ conversion in one direction only:
                         a middle one and the last
     arity   sub         two parameters, which the backend curries: one
                         application per argument (TODO.md#arity)
+    sum     unwrap-or   an `option` in each position -- one case of each
+            halve       CertiRocq kind, so the tag bit is what tells them
+                        apart -- and a `result<u64, bool>` as a *value*,
+            flip        where both cases are boxed and the ordinal in the
+                        block picks one
 
 Each case is a world and an `impl.v` and nothing else: the interface, the
 extraction, the adapter and the build rules are generated, and `make` is what
@@ -128,6 +133,33 @@ EXPECTED: dict[str, dict] = {
         "export": "colour-of",
         "pins": [("Enum", "result")],
         "answers": [("0", "ok(red)"), ("1", "ok(green)"), ("2", "ok(blue)")],
+    },
+    "sum-param": {
+        "export": "unwrap-or",
+        "pins": [("Sum", "param")],
+        "answers": [
+            ("none", "ok(7)"),
+            ("some(3)", "ok(3)"),
+            # The payload's range check, which runs under the discriminant
+            # that makes the payload live: an `option<u64>` can carry a `u64`
+            # with no `Uint63.int` exactly when it is `some`.
+            ("some(9223372036854775808)", "err(out-of-range)"),
+        ],
+    },
+    "sum-result": {
+        "export": "halve",
+        "pins": [("Sum", "result")],
+        "answers": [("4", "ok(some(2))"), ("3", "ok(none)"), ("0", "ok(some(0))")],
+    },
+    "sum-both": {
+        "export": "flip",
+        "pins": [("Sum", "param"), ("Sum", "result")],
+        "answers": [
+            ("ok(5)", "ok(err(false))"),
+            ("ok(0)", "ok(err(true))"),
+            ("err(true)", "ok(ok(1))"),
+            ("err(false)", "ok(ok(0))"),
+        ],
     },
     "arity": {
         "export": "sub",

@@ -1,0 +1,9 @@
+package local:ok;
+
+// `option` in a parameter and in the ok half: the two-case sum whose cases are
+// one of each CertiRocq kind, so lifting and lowering it turn on the tag bit
+// rather than on a stored discriminant.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export unwrap: func(x: option<u64>) -> result<option<u64>, error>;
+}

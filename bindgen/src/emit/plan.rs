@@ -38,15 +38,112 @@ pub enum Repr {
         /// Width of the discriminant in the canonical ABI.
         tag: Int,
     },
+    /// A WIT `option`, or a `result` somewhere other than the return type:
+    /// two cases, each carrying at most one payload, in one of the standard
+    /// library's sums (TODO.md#option-result).
+    ///
+    /// Boxed in a different sense than [`Repr::Int63`] is. A case with a
+    /// payload is a pointer to `[ord, field]`; a case without one is an
+    /// immediate. So the value is a pointer *or* an immediate depending on
+    /// which case it holds, and telling them apart is the tag bit
+    /// (`repr::IMMEDIATE_TAG_BIT`) -- the same test the backend's own `match`
+    /// makes.
+    Sum(Box<Sum>),
+}
+
+/// How CertiRocq represents one constructor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtorTag {
+    /// Nullary: the value *is* this number.
+    Immediate(u32),
+    /// With a payload: a pointer to a block whose first cell holds this
+    /// ordinal. Ordinals are per class, so this is not the declaration index
+    /// -- see `repr::ordinal`.
+    Boxed(u32),
+}
+
+/// One case of a two-case sum, in canonical-ABI discriminant order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SumCase {
+    /// The WIT case name, for the comments the emitters write.
+    pub wit_name: &'static str,
+    /// The Rocq constructor carrying it.
+    pub ctor: &'static str,
+    /// What it carries, or `None` for a case with no payload at all.
+    pub payload: Option<Repr>,
+    pub tag: CtorTag,
+}
+
+/// A two-case WIT sum and the Rocq type carrying it.
+///
+/// Four WIT spellings land here, and the constructor each case maps to is a
+/// table rather than a formula, because the mapping is not monotone: a
+/// `result<T>`'s *first* case is the one with a payload, so it is `Some`,
+/// while an `option<T>`'s first case is the empty one, so it is `None`.
+///
+/// | WIT | Rocq | discriminant 0 | discriminant 1 |
+/// | --- | --- | --- | --- |
+/// | `option<T>` | `option T` | `none` → `None` | `some` → `Some` |
+/// | `result<T, E>` | `sum T E` | `ok` → `inl` | `err` → `inr` |
+/// | `result<T>` | `option T` | `ok` → `Some` | `err` → `None` |
+/// | `result<_, E>` | `option E` | `ok` → `None` | `err` → `Some` |
+///
+/// Note what the third and fourth rows mean for the user's file: the ok half
+/// of a `result<T>` is written `Some x`, and the ok half of a `result<_, E>`
+/// is `None`. The generated `interface.v` says so next to the signature --
+/// nothing else in the pipeline would tell them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sum {
+    /// How the type reads in the WIT file.
+    pub wit: String,
+    /// The Rocq type, as a signature writes it: `option int`, `sum int bool`.
+    pub rocq_type: String,
+    pub cases: [SumCase; 2],
+    /// Canonical-ABI numbers, from the same `SizeAlign` the component build
+    /// uses: the discriminant's width, and where the payload sits inside the
+    /// value. Both are needed at every nesting depth, which is why they live
+    /// on the type rather than only in [`Layout`].
+    pub tag: Int,
+    pub payload: u32,
+    pub size: u32,
+    pub align: u32,
+}
+
+impl Sum {
+    /// The case a value with the tag bit set holds, if either does.
+    ///
+    /// At most one of the two can be nullary -- a sum whose cases were both
+    /// payload-less would be an enum, and the generator refuses to carry one
+    /// here -- so an immediate identifies its case outright. That is what
+    /// makes lifting an `option` a single test rather than a search.
+    pub fn immediate_case(&self) -> Option<(u32, &SumCase)> {
+        self.cases
+            .iter()
+            .enumerate()
+            .find(|(_, c)| matches!(c.tag, CtorTag::Immediate(_)))
+            .map(|(d, c)| (d as u32, c))
+    }
 }
 
 impl Repr {
     /// The Rocq type as it is written in a signature.
-    pub fn rocq_type(&self) -> &str {
+    pub fn rocq_type(&self) -> String {
         match self {
-            Repr::Bool => "bool",
-            Repr::Int63 => "int",
-            Repr::Enum { rocq_type, .. } => rocq_type,
+            Repr::Bool => "bool".into(),
+            Repr::Int63 => "int".into(),
+            Repr::Enum { rocq_type, .. } => rocq_type.clone(),
+            Repr::Sum(sum) => sum.rocq_type.clone(),
+        }
+    }
+
+    /// The same, parenthesised when it is an application, so that it can be
+    /// the argument of another one: `option (option int)`, not
+    /// `option option int`, which Rocq would read as a two-argument `option`.
+    pub fn rocq_type_arg(&self) -> String {
+        let ty = self.rocq_type();
+        match ty.contains(' ') {
+            true => format!("({ty})"),
+            false => ty,
         }
     }
 
@@ -54,9 +151,27 @@ impl Repr {
     ///
     /// This is the single fact the adapter's lift and lower turn on: an
     /// immediate is passed and returned as itself, a boxed value as the
-    /// address of its payload.
+    /// address of its payload. A [`Repr::Sum`] is neither -- it is one or the
+    /// other per case -- so it answers `false` and the emitters match on it
+    /// rather than asking.
     pub fn boxed(&self) -> bool {
         matches!(self, Repr::Int63)
+    }
+
+    /// Can a value of this type carry a `u64` that has no `Uint63.int`?
+    ///
+    /// Recursive, because an `option<u64>` parameter can: the payload is the
+    /// same primitive int, and its range check is the same check, emitted
+    /// under the tag that makes the payload live.
+    pub fn carries_int63(&self) -> bool {
+        match self {
+            Repr::Int63 => true,
+            Repr::Bool | Repr::Enum { .. } => false,
+            Repr::Sum(sum) => sum
+                .cases
+                .iter()
+                .any(|c| c.payload.as_ref().is_some_and(Repr::carries_int63)),
+        }
     }
 
     /// WIT discriminant *i* corresponds to which CertiRocq immediate?
@@ -68,6 +183,10 @@ impl Repr {
     /// agree with the component model's `false = 0, true = 1`. Two reasons, one
     /// table -- so the table is what the adapter is emitted from, and
     /// [`Self::tags_are_the_formula`] is what lets it be emitted as a shift.
+    ///
+    /// Empty for the two types that are not all-nullary. A [`Repr::Sum`] has
+    /// a per-case table of its own ([`SumCase::tag`]), because its two cases
+    /// are not in the same ordinal class and no single formula covers them.
     pub fn tags(&self) -> Vec<u32> {
         match self {
             Repr::Bool => vec![
@@ -75,7 +194,7 @@ impl Repr {
                 repr::BOOL_TRUE,  // true is discriminant 1
             ],
             Repr::Enum { cases, .. } => (0..*cases as u32).map(repr::nullary_immediate).collect(),
-            Repr::Int63 => Vec::new(),
+            Repr::Int63 | Repr::Sum(_) => Vec::new(),
         }
     }
 
@@ -85,12 +204,135 @@ impl Repr {
     /// and lowers with a shift. When it ever does not, the shift would quietly
     /// map the user's cases onto the wrong constructors, so the emitter must
     /// refuse rather than assume.
+    /// Recursive, because a shift is emitted wherever an all-nullary type is
+    /// carried -- including as the payload of a sum, where nothing else would
+    /// look at it.
     pub fn tags_are_the_formula(&self) -> bool {
-        self.tags()
+        let mine = self
+            .tags()
             .iter()
             .enumerate()
-            .all(|(d, &tag)| tag == repr::nullary_immediate(d as u32))
+            .all(|(d, &tag)| tag == repr::nullary_immediate(d as u32));
+        mine && match self {
+            Repr::Sum(sum) => sum.cases.iter().all(|c| match &c.payload {
+                Some(payload) => payload.tags_are_the_formula(),
+                None => true,
+            }),
+            _ => true,
+        }
     }
+
+    /// The core wasm values the canonical ABI flattens this type into, in
+    /// order.
+    ///
+    /// One slot for a scalar. For a sum, the discriminant and then the *join*
+    /// of its two cases' slots: the cases share them, so a
+    /// `result<u64, bool>` arrives as `[i32, i64]` with the `bool` riding in
+    /// the i64 and read back out of its low half.
+    ///
+    /// This is the canonical ABI's own rule rather than a convenience, which
+    /// is why [`Plan::new`] holds the concatenation of these against the
+    /// flattening `wit_parser` computes for the whole signature. The two
+    /// agreeing is what makes it safe to read a parameter out of a particular
+    /// local.
+    pub fn flatten(&self) -> Result<Vec<&'static str>> {
+        match self {
+            Repr::Bool | Repr::Enum { .. } => Ok(vec!["i32"]),
+            Repr::Int63 => Ok(vec!["i64"]),
+            Repr::Sum(sum) => {
+                let mut slots = vec!["i32"];
+                let mut cases = sum.cases.iter().map(|c| match &c.payload {
+                    Some(repr) => repr.flatten(),
+                    None => Ok(Vec::new()),
+                });
+                let (a, b) = (cases.next().unwrap()?, cases.next().unwrap()?);
+                for i in 0..a.len().max(b.len()) {
+                    slots.push(match (a.get(i), b.get(i)) {
+                        (Some(x), None) | (None, Some(x)) => x,
+                        (Some(x), Some(y)) => join(x, y)?,
+                        (None, None) => unreachable!("i is below one of the two lengths"),
+                    });
+                }
+                Ok(slots)
+            }
+        }
+    }
+
+    /// The heap cells a *lowering* of this type writes into, as offsets from
+    /// the start of the parameter's own block, and the size of the block.
+    ///
+    /// Nothing is allocated at run time: the adapter takes every cell it could
+    /// need off the bump pointer before the program runs
+    /// ([`layout`]), so the shape has to be known here. Both cases of a sum
+    /// get their own cells even though only one of them is ever written --
+    /// reusing one region for both would be sound today and a trap waiting for
+    /// the first case that is live across the other's store.
+    pub fn cells(&self, next: &mut u32) -> Cells {
+        match self {
+            Repr::Bool | Repr::Enum { .. } => Cells::Nothing,
+            Repr::Int63 => {
+                let at = *next;
+                *next += repr::PRIM_PAYLOAD_SIZE;
+                Cells::Payload(at)
+            }
+            Repr::Sum(sum) => {
+                // `[ord, field]`: the block a boxed case points at. Shared
+                // between the cases, since exactly one of them is built.
+                let at = *next;
+                *next += repr::CELL * 2;
+                Cells::Block {
+                    at,
+                    cases: sum
+                        .cases
+                        .iter()
+                        .map(|c| match &c.payload {
+                            Some(repr) => repr.cells(next),
+                            None => Cells::Nothing,
+                        })
+                        .collect(),
+                }
+            }
+        }
+    }
+}
+
+/// Where the cells one parameter's lowering writes into sit, in the shape of
+/// the value being built. Offsets are from the start of that parameter's
+/// block; [`Param::block`] says where the block itself is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cells {
+    /// An immediate: there is nothing to write.
+    Nothing,
+    /// An 8-byte primitive payload at this offset.
+    Payload(u32),
+    /// `[ord, field]` at this offset, and then whatever each case's own
+    /// payload needs.
+    Block { at: u32, cases: Vec<Cells> },
+}
+
+impl Cells {
+    /// Does building this value touch memory at all?
+    pub fn any(&self) -> bool {
+        !matches!(self, Cells::Nothing)
+    }
+}
+
+/// The canonical ABI's join of two flat slots: what one slot has to be to
+/// carry either of two cases' values.
+///
+/// Only the pairs the supported subset can produce are here. `i32` into `i64`
+/// is the widening; the float cases of the real rule cannot arise, because the
+/// gate refuses `f32` and `f64` outright (`E-FLOAT`), and guessing at a pair
+/// this has never seen is how a parameter ends up read out of the wrong local.
+fn join(a: &'static str, b: &'static str) -> Result<&'static str> {
+    Ok(match (a, b) {
+        (x, y) if x == y => x,
+        ("i32", "i64") | ("i64", "i32") => "i64",
+        _ => bail!(
+            "the canonical ABI joins the flat slots `{a}` and `{b}` of two cases into one, \
+             and this generator has no rule for that pair -- see TODO.md#option-result"
+        ),
+    })
 }
 
 /// An inductive `interface.v` has to declare, because the world declared a
@@ -149,24 +391,63 @@ pub struct Discriminants {
     pub out_of_range: Option<u32>,
 }
 
+/// One core wasm parameter of the emitted function: where a flat value of the
+/// canonical ABI arrives.
+#[derive(Debug, Clone)]
+pub struct Slot {
+    /// The wat local, which is also the name in the parameter list.
+    pub local: String,
+    pub wasm: &'static str,
+}
+
+/// The heap cells one parameter's lowering writes into.
+#[derive(Debug, Clone)]
+pub struct Block {
+    /// Offset of the block from the start of the adapter's reservation.
+    pub offset: u32,
+    /// The wat local holding its address, set once in the prologue.
+    pub local: String,
+    /// The cells inside it, at offsets from `local`.
+    pub cells: Cells,
+    pub size: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Param {
     pub wit_name: String,
     pub rocq_name: String,
     pub repr: Repr,
-    /// The core wasm type the canonical ABI flattens this parameter to.
-    pub wasm: &'static str,
-    /// Offset of this parameter's box from the start of the reservation, and
-    /// the wat local holding its address. `None` for an immediate, which is
-    /// passed as itself and needs no heap cell.
-    pub box_offset: Option<u32>,
-    pub box_local: Option<String>,
+    /// The core wasm parameters the canonical ABI flattens this one into, in
+    /// order. One for a scalar, named after the parameter; several for a sum,
+    /// which the adapter writes a comment over saying which slot is which.
+    pub slots: Vec<Slot>,
+    /// Where the cells this parameter's lowering needs sit, or `None` when it
+    /// is built entirely out of immediates and touches no memory.
+    pub block: Option<Block>,
 }
 
 impl Param {
-    /// Is this argument handed over as the address of a heap cell?
-    pub fn boxed(&self) -> bool {
-        self.box_offset.is_some()
+    /// Does building this argument write into the heap?
+    pub fn has_block(&self) -> bool {
+        self.block.is_some()
+    }
+
+    /// The expression yielding the address of a cell at `offset` inside this
+    /// parameter's block.
+    ///
+    /// Offset zero is the block itself, spelled as the bare local -- which is
+    /// what the hand-written `examples/plus1` adapter writes for its one box,
+    /// and that adapter is what this emitter is held to.
+    pub fn cell(&self, offset: u32) -> String {
+        let local = &self
+            .block
+            .as_ref()
+            .expect("a parameter with no block has no cells to address")
+            .local;
+        match offset {
+            0 => format!("(local.get ${local})"),
+            n => format!("(i32.add (local.get ${local}) (i32.const {n}))"),
+        }
     }
 }
 
@@ -293,6 +574,12 @@ impl Plan {
              rejected (E-MULTI-EXPORT) -- see TODO.md#multi-export"
         );
 
+        // One `SizeAlign` for the whole plan: it is the canonical ABI's own
+        // layout code, and every offset in the generated adapter comes out of
+        // it rather than out of arithmetic here.
+        let mut sizes = SizeAlign::default();
+        sizes.fill(resolve);
+
         let mut inductives = Vec::new();
         let mut taken: Vec<String> = Vec::new();
 
@@ -307,7 +594,7 @@ impl Plan {
             .params
             .iter()
             .map(|p| {
-                repr_of(resolve, p.ty, &mut inductives, &mut taken)
+                repr_of(resolve, &sizes, p.ty, &mut inductives, &mut taken)
                     .with_context(|| format!("parameter `{}` of `{wit_name}`", p.name))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -326,11 +613,27 @@ impl Plan {
             "the export returns result<_, error> with no ok type, so there is nothing for \
              the Rocq function to return -- give the ok half a type",
         )?;
-        let ok_repr = repr_of(resolve, ok, &mut inductives, &mut taken)
+        let ok_repr = repr_of(resolve, &sizes, ok, &mut inductives, &mut taken)
             .with_context(|| format!("the result of `{wit_name}`"))?;
 
+        // The adapter lifts and lowers an all-nullary type with a shift, which
+        // is only the same thing as its table of immediates while the table is
+        // `2*d+1`. Checked here rather than assumed in the emitter, because a
+        // table that stopped reducing to the formula would not fail -- it
+        // would map the user's cases onto the wrong constructors.
+        for repr in param_reprs.iter().chain([&ok_repr]) {
+            ensure!(
+                repr.tags_are_the_formula(),
+                "`{}` is carried by a type whose constructor immediates are not `2*d+1` \
+                 ({:?}), and the adapter lifts and lowers them with a shift -- see \
+                 TODO.md#extract-inductives",
+                repr.rocq_type(),
+                repr.tags()
+            );
+        }
+
         let sig = resolve.wasm_signature(AbiVariant::GuestExport, func);
-        let (layout, boxes) = layout(resolve, result, &sig, &param_reprs, ok, err)?;
+        let (layout, blocks) = layout(resolve, &sizes, result, &sig, &param_reprs, ok, err)?;
         let discriminants = discriminants(resolve, err, &param_reprs)?;
 
         // What the gate says can go wrong has to be what the adapter can
@@ -349,35 +652,90 @@ impl Plan {
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
-        let wasm = wasm_types(&sig.params, func.params.len(), &wit_name)?;
+
+        // How the canonical ABI flattens the whole signature, as `wit_parser`
+        // computes it, against how it flattens each parameter, as the types
+        // carried here say. The adapter reads parameter *i* out of particular
+        // locals, so the two disagreeing would have it read one parameter's
+        // bytes as another's -- with every type in sight still checking out.
+        let flat = param_reprs
+            .iter()
+            .map(Repr::flatten)
+            .collect::<Result<Vec<_>>>()?;
+        let theirs = wasm_types(&sig.params, &wit_name)?;
+        ensure!(
+            flat.concat() == theirs,
+            "`{wit_name}` flattens to {theirs:?} in the canonical ABI, but the types this \
+             generator carries its {} parameter(s) in flatten to {:?}. The adapter reads \
+             each parameter out of its own local, so it cannot be emitted against a \
+             disagreement -- see TODO.md#option-result",
+            param_reprs.len(),
+            flat.concat()
+        );
+
         let mut params = Vec::new();
         for (i, p) in func.params.iter().enumerate() {
+            let rocq_name = rocq_ident(&p.name, "parameter", &mut locals)?;
+            // A parameter arriving in one core value keeps its own name, which
+            // is what the hand-written adapters spell it. Several are
+            // numbered: nothing in the WIT file names the flat values of a
+            // sum, and the adapter writes a comment saying which is which.
+            let slots: Vec<Slot> = flat[i]
+                .iter()
+                .enumerate()
+                .map(|(s, wasm)| Slot {
+                    local: match flat[i].len() {
+                        1 => rocq_name.clone(),
+                        _ => format!("{rocq_name}_f{s}"),
+                    },
+                    wasm,
+                })
+                .collect();
+            for slot in &slots {
+                if slot.local == rocq_name {
+                    continue;
+                }
+                ensure!(
+                    !locals.contains(&slot.local),
+                    "`{}` arrives in {} core values, and the local for one of them \
+                     (`${}`) is already taken -- by another name in this world, or by a \
+                     local the generated adapter declares. Rename it in the WIT file.",
+                    p.name,
+                    slots.len(),
+                    slot.local
+                );
+                locals.push(slot.local.clone());
+            }
             params.push(Param {
                 wit_name: p.name.clone(),
-                rocq_name: rocq_ident(&p.name, "parameter", &mut locals)?,
-                wasm: wasm[i],
+                rocq_name,
                 repr: param_reprs[i].clone(),
-                box_offset: boxes[i],
-                box_local: None,
+                slots,
+                block: None,
             });
         }
-        // The box locals are named once the parameters are, since all but the
-        // one-parameter spelling are derived from them and have to clear the
-        // same set.
-        for i in 0..params.len() {
-            if params[i].box_offset.is_none() {
+        // The block locals are named once the parameters are, since all but
+        // the one-parameter spelling are derived from them and have to clear
+        // the same set.
+        for (i, block) in blocks.into_iter().enumerate() {
+            let Some((offset, size, cells)) = block else {
                 continue;
-            }
-            let name = box_local(&params, i);
+            };
+            let local = block_local(&params, i);
             ensure!(
-                name == ONE_ARG_LOCAL || !locals.contains(&name),
-                "parameter `{}` needs a box, and the local for it (`${name}`) is \
+                local == ONE_ARG_LOCAL || !locals.contains(&local),
+                "parameter `{}` needs heap cells, and the local for them (`${local}`) is \
                  already taken -- by another name in this world, or by a local the \
                  generated adapter declares. Rename it in the WIT file.",
                 params[i].wit_name
             );
-            locals.push(name.clone());
-            params[i].box_local = Some(name);
+            locals.push(local.clone());
+            params[i].block = Some(Block {
+                offset,
+                local,
+                cells,
+                size,
+            });
         }
 
         Ok(Plan {
@@ -451,6 +809,7 @@ fn rocq_ident(wit: &str, what: &str, taken: &mut Vec<String>) -> Result<String> 
 /// no counterpart to reuse.
 fn repr_of(
     resolve: &Resolve,
+    sizes: &SizeAlign,
     ty: Type,
     inductives: &mut Vec<Inductive>,
     taken: &mut Vec<String>,
@@ -461,7 +820,7 @@ fn repr_of(
         Type::Id(id) => {
             let def = &resolve.types[id];
             match &def.kind {
-                TypeDefKind::Type(inner) => repr_of(resolve, *inner, inductives, taken),
+                TypeDefKind::Type(inner) => repr_of(resolve, sizes, *inner, inductives, taken),
                 TypeDefKind::Enum(e) => {
                     let wit_name = def
                         .name
@@ -492,6 +851,38 @@ fn repr_of(
                         tag: e.tag(),
                     })
                 }
+                // An `option` here is a value rather than the failure channel:
+                // the channel is the export's return type and is stripped
+                // before this runs (`result_halves`). Both of these are the
+                // same two-case shape -- see [`Sum`].
+                TypeDefKind::Option(inner) => {
+                    let payload = repr_of(resolve, sizes, *inner, inductives, taken)
+                        .context("the payload of an `option`")?;
+                    sum_of(
+                        resolve,
+                        sizes,
+                        ty,
+                        [("none", None, None), ("some", Some(*inner), Some(payload))],
+                    )
+                }
+                TypeDefKind::Result(r) => {
+                    let half = |ty: Option<Type>,
+                                what: &str,
+                                inductives: &mut Vec<Inductive>,
+                                taken: &mut Vec<String>|
+                     -> Result<Option<Repr>> {
+                        match ty {
+                            Some(ty) => Ok(Some(
+                                repr_of(resolve, sizes, ty, inductives, taken)
+                                    .with_context(|| format!("the {what} half of a `result`"))?,
+                            )),
+                            None => Ok(None),
+                        }
+                    };
+                    let ok = half(r.ok, "ok", inductives, taken)?;
+                    let err = half(r.err, "err", inductives, taken)?;
+                    sum_of(resolve, sizes, ty, [("ok", r.ok, ok), ("err", r.err, err)])
+                }
                 kind => bail!(
                     "{} has no Rocq counterpart here, which the gate should have rejected \
                      -- see TODO.md",
@@ -503,6 +894,86 @@ fn repr_of(
             bail!("{other:?} is not carried, which the gate should have rejected -- see TODO.md")
         }
     }
+}
+
+/// A two-case WIT type as the Rocq sum carrying it.
+///
+/// Which sum that is depends on how many of the cases have a payload, and the
+/// case-to-constructor mapping with it -- the table on [`Sum`]. The three
+/// shapes are not a convenience: `option` is the only Stdlib type with one
+/// constructor of each kind, so it is the only one that can carry a sum where
+/// exactly one case is empty, and `sum` the only one that can carry a sum
+/// where neither is.
+fn sum_of(
+    resolve: &Resolve,
+    sizes: &SizeAlign,
+    ty: Type,
+    cases: [(&'static str, Option<Type>, Option<Repr>); 2],
+) -> Result<Repr> {
+    let [(name_a, type_a, repr_a), (name_b, type_b, repr_b)] = cases;
+    let case = |wit_name: &'static str, ctor: &'static str, payload, tag| SumCase {
+        wit_name,
+        ctor,
+        payload,
+        tag,
+    };
+    use repr::sums::{INL_ORDINAL, INR_ORDINAL, NONE_IMMEDIATE, SOME_ORDINAL};
+    let (rocq_type, cases) = match (repr_a, repr_b) {
+        // One payload: Rocq's `option`, whose two constructors are one of each
+        // kind. Which case is `Some` is which case has the payload, so the
+        // ordering of the two spellings is opposite -- an `option<T>`'s empty
+        // case comes first, a `result<T>`'s comes second.
+        (None, Some(b)) => (
+            format!("option {}", b.rocq_type_arg()),
+            [
+                case(name_a, "None", None, CtorTag::Immediate(NONE_IMMEDIATE)),
+                case(name_b, "Some", Some(b), CtorTag::Boxed(SOME_ORDINAL)),
+            ],
+        ),
+        (Some(a), None) => (
+            format!("option {}", a.rocq_type_arg()),
+            [
+                case(name_a, "Some", Some(a), CtorTag::Boxed(SOME_ORDINAL)),
+                case(name_b, "None", None, CtorTag::Immediate(NONE_IMMEDIATE)),
+            ],
+        ),
+        // Two payloads: Rocq's `sum`, whose constructors are both boxed and so
+        // are ordinals 0 and 1 in declaration order. That order is the one
+        // fact here that upstream could change under us, which is why
+        // `checks/representation.py` measures it.
+        (Some(a), Some(b)) => (
+            format!("sum {} {}", a.rocq_type_arg(), b.rocq_type_arg()),
+            [
+                case(name_a, "inl", Some(a), CtorTag::Boxed(INL_ORDINAL)),
+                case(name_b, "inr", Some(b), CtorTag::Boxed(INR_ORDINAL)),
+            ],
+        ),
+        // Neither: two constructors that carry nothing is an enum, and the
+        // Rocq type for it would have to be declared rather than reused.
+        // Refused rather than carried, because `bool` is the obvious candidate
+        // and it is the one inductive whose ordinals are swapped -- it would
+        // exchange the two cases (`repr::BOOL_FALSE`).
+        (None, None) => bail!(
+            "`{}` has a payload in neither case, so there is nothing to carry and no \
+             Stdlib sum to carry it in. A two-case type with no payloads is an `enum`: \
+             declare one, and its cases keep their order -- see TODO.md#option-result",
+            show(resolve, ty)
+        ),
+    };
+
+    Ok(Repr::Sum(Box::new(Sum {
+        wit: show(resolve, ty),
+        rocq_type,
+        cases,
+        // Two cases, so one byte, by the same rule the return area's own
+        // discriminant follows.
+        tag: Int::U8,
+        payload: sizes
+            .payload_offset(Int::U8, [type_a.as_ref(), type_b.as_ref()])
+            .size_wasm32() as u32,
+        size: sizes.size(&ty).size_wasm32() as u32,
+        align: sizes.align(&ty).align_wasm32() as u32,
+    })))
 }
 
 /// The ok and err halves of the declared result type.
@@ -520,19 +991,23 @@ fn result_halves(resolve: &Resolve, ty: Type) -> Result<(Option<Type>, Type)> {
     }
 }
 
+/// Where one parameter's block sits in the reservation and what is in it:
+/// offset, size, and the cells the lowering writes. `None` for a parameter
+/// that is an immediate and touches no memory.
+type Blocks = Vec<Option<(u32, u32, Cells)>>;
+
 /// Canonical-ABI numbers for the return area, plus the bump-pointer
-/// reservation the adapter takes for it.
-/// Returns the canonical-ABI numbers, and where each parameter's box sits in
-/// the reservation -- positionally, `None` for a parameter that is an
-/// immediate.
+/// reservation the adapter takes for it and the block each parameter needs,
+/// positionally.
 fn layout(
     resolve: &Resolve,
+    sizes: &SizeAlign,
     result: Type,
     sig: &wit_parser::abi::WasmSignature,
     params: &[Repr],
     ok: Type,
     err: Type,
-) -> Result<(Layout, Vec<Option<u32>>)> {
+) -> Result<(Layout, Blocks)> {
     // A result that flattens to one core value is returned in a register, with
     // no return area at all -- a different adapter shape than the one emitted
     // here. Nothing in the supported subset does that (`result<T, error>` is
@@ -562,9 +1037,6 @@ fn layout(
         wit_parser::Resolve::MAX_FLAT_PARAMS
     );
 
-    let mut sizes = SizeAlign::default();
-    sizes.fill(resolve);
-
     let ret_size = sizes.size(&result).size_wasm32() as u32;
     let ret_align = sizes.align(&result).align_wasm32() as u32;
     // `result<T, E>` is a two-case variant, so a one-byte discriminant; the
@@ -583,20 +1055,27 @@ fn layout(
          {ADAPTER_ALIGN} the adapter aligns `mem_ptr` to"
     );
     let area = ret_size.next_multiple_of(ADAPTER_ALIGN);
-    // One box per boxed parameter, in parameter order, above the return area.
-    // They are all live at once: the first application captures its box by
-    // address and the last application can still be reading it, so these
-    // cannot overlap or be reused (TODO.md#arity).
+    // One block per parameter that needs cells, in parameter order, above the
+    // return area. They are all live at once: the first application captures
+    // its cells by address and the last application can still be reading them,
+    // so these cannot overlap or be reused (TODO.md#arity).
+    //
+    // A primitive int needs one 8-byte payload; a sum needs `[ord, field]` and
+    // then whatever its cases' payloads need, which is why the shape comes
+    // from `Repr::cells` rather than from a count here.
     let mut reserve = area;
-    let mut boxes = Vec::with_capacity(params.len());
+    let mut blocks = Vec::with_capacity(params.len());
     for param in params {
-        match param.boxed() {
+        let offset = reserve;
+        let mut size = 0;
+        let cells = param.cells(&mut size);
+        blocks.push(match cells.any() {
             true => {
-                boxes.push(Some(reserve));
-                reserve += repr::PRIM_PAYLOAD_SIZE;
+                reserve += size;
+                Some((offset, size, cells))
             }
-            false => boxes.push(None),
-        }
+            false => None,
+        });
     }
 
     Ok((
@@ -608,20 +1087,20 @@ fn layout(
             err_tag: enum_tag(resolve, err)?,
             reserve,
         },
-        boxes,
+        blocks,
     ))
 }
 
-/// The wat local a boxed argument goes in.
+/// The wat local an argument's heap cells go in.
 ///
 /// With one parameter there is no ambiguity about which argument `$arg` is,
 /// and `$arg` is what the hand-written `examples/plus1` adapter -- the
-/// reference this emitter is held to -- calls it. With several, each box is
+/// reference this emitter is held to -- calls it. With several, each block is
 /// named after its parameter, so which application is being emitted can be
 /// read off the code.
 pub const ONE_ARG_LOCAL: &str = "arg";
 
-fn box_local(params: &[Param], i: usize) -> String {
+fn block_local(params: &[Param], i: usize) -> String {
     match params.len() {
         1 => ONE_ARG_LOCAL.to_string(),
         _ => format!("{ONE_ARG_LOCAL}_{}", params[i].rocq_name),
@@ -666,7 +1145,7 @@ fn discriminants(resolve: &Resolve, err: Type, params: &[Repr]) -> Result<Discri
         out_of_memory: case("out-of-memory")?,
         // One case for however many parameters can be out of range: the
         // adapter checks each of them, and every check reports the same thing.
-        out_of_range: match params.iter().any(Repr::boxed) {
+        out_of_range: match params.iter().any(Repr::carries_int63) {
             true => Some(case("out-of-range")?),
             false => None,
         },
@@ -685,7 +1164,7 @@ fn check_failures(
             // failed there; nothing left to check.
             Failure::OutOfMemory => {}
             Failure::OutOfRange(what) => ensure!(
-                params.iter().any(Repr::boxed) && discriminants.out_of_range.is_some(),
+                params.iter().any(Repr::carries_int63) && discriminants.out_of_range.is_some(),
                 "the gate reports that this export can fail with out of range ({what}), \
                  but the adapter emitted for its parameters ({}) has no range check. \
                  Teach the adapter that case, or narrow `support::failure_modes`",
@@ -717,19 +1196,14 @@ fn check_failures(
 /// silently, mapping the adapter's second argument onto the first one's second
 /// field, so the counts disagreeing is a refusal rather than something to
 /// work out.
-fn wasm_types(flat: &[WasmType], declared: usize, export: &str) -> Result<Vec<&'static str>> {
-    ensure!(
-        flat.len() == declared,
-        "`{export}` declares {declared} parameter(s) but flattens to {} core \
-         value(s), so they do not correspond one to one -- which the gate should \
-         have rejected (E-STRUCTURED) -- see TODO.md#structured-types",
-        flat.len()
-    );
+fn wasm_types(flat: &[WasmType], export: &str) -> Result<Vec<&'static str>> {
     flat.iter()
         .map(|ty| match ty {
             WasmType::I32 | WasmType::Pointer | WasmType::Length => Ok("i32"),
             WasmType::I64 => Ok("i64"),
-            other => bail!("a {other:?} parameter is not carried -- see TODO.md"),
+            other => {
+                bail!("`{export}` has a {other:?} parameter, which is not carried -- see TODO.md")
+            }
         })
         .collect()
 }
@@ -758,11 +1232,19 @@ fn show(resolve: &Resolve, ty: Type) -> String {
                 return name.clone();
             }
             match &def.kind {
-                TypeDefKind::Result(r) => format!(
-                    "result<{}, {}>",
-                    r.ok.map(|t| show(resolve, t)).unwrap_or_default(),
-                    r.err.map(|t| show(resolve, t)).unwrap_or_default()
-                ),
+                // All four spellings, as WIT writes them: a missing half is
+                // `_` on the left and nothing at all on the right, and a
+                // `result` with neither is bare. Printing the commas anyway
+                // would put `result<u64, >` in the generated comments, which
+                // is not a type anyone can write.
+                TypeDefKind::Result(r) => match (r.ok, r.err) {
+                    (Some(ok), Some(err)) => {
+                        format!("result<{}, {}>", show(resolve, ok), show(resolve, err))
+                    }
+                    (Some(ok), None) => format!("result<{}>", show(resolve, ok)),
+                    (None, Some(err)) => format!("result<_, {}>", show(resolve, err)),
+                    (None, None) => "result".into(),
+                },
                 TypeDefKind::Option(t) => format!("option<{}>", show(resolve, *t)),
                 TypeDefKind::Type(t) => show(resolve, *t),
                 kind => kind.as_str().to_string(),

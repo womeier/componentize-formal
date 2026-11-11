@@ -4,7 +4,7 @@
 use std::fmt::Write;
 
 use super::comment;
-use super::plan::{Plan, Repr};
+use super::plan::{Plan, Repr, Sum};
 use super::MARKER;
 
 /// `interface.v`: the world as a `Module Type`.
@@ -66,6 +66,25 @@ pub fn interface(plan: &Plan) -> String {
 
     writeln!(out, "\nModule Type {}.", plan.module_type).unwrap();
     writeln!(out, "  (* {} *)", e.signature).unwrap();
+    // Which constructor is which case. The mapping is not guessable from the
+    // names -- the ok half of a `result<T>` is `Some` and the ok half of a
+    // `result<_, E>` is `None` -- and nothing else in the pipeline would say
+    // so: a file that gets it the wrong way round type-checks and returns the
+    // other case.
+    for sum in sums(plan) {
+        writeln!(
+            out,
+            "  (* `{}` is carried as `{}`: {} *)",
+            sum.wit,
+            sum.rocq_type,
+            sum.cases
+                .iter()
+                .map(|c| format!("`{}` is `{}`", c.wit_name, c.ctor))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+        .unwrap();
+    }
     writeln!(
         out,
         "  Parameter {} : {}.",
@@ -148,12 +167,44 @@ fn show_result(plan: &Plan) -> String {
 
 impl Plan {
     /// Does any carried type need Rocq's primitive integers?
+    ///
+    /// Recursive, because the payload of an `option` needs the import as much
+    /// as a bare parameter does -- and a signature mentioning `int` without
+    /// it does not compile, which is a failure the user would have to read
+    /// Rocq's output to understand.
     fn uses_int63(&self) -> bool {
+        self.carried().any(Repr::carries_int63)
+    }
+
+    /// Every type the signature carries, parameters then result.
+    fn carried(&self) -> impl Iterator<Item = &Repr> {
         self.export
             .params
             .iter()
             .map(|p| &p.repr)
             .chain([&self.export.ok])
-            .any(|r| *r == Repr::Int63)
     }
+}
+
+/// Every sum in the signature, outermost first and deduplicated by how it
+/// reads in WIT.
+fn sums(plan: &Plan) -> Vec<&Sum> {
+    fn walk<'a>(repr: &'a Repr, found: &mut Vec<&'a Sum>) {
+        let Repr::Sum(sum) = repr else {
+            return;
+        };
+        if !found.iter().any(|seen| seen.wit == sum.wit) {
+            found.push(sum);
+        }
+        for case in &sum.cases {
+            if let Some(payload) = &case.payload {
+                walk(payload, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for repr in plan.carried() {
+        walk(repr, &mut found);
+    }
+    found
 }

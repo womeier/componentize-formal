@@ -82,6 +82,10 @@ fn bad_worlds_are_rejected() {
 
 #[test]
 fn rejects_what_the_backend_cannot_represent() {
+    // Two payload-less cases carry no value at all, and the Stdlib sum that
+    // would hold them does not exist. Not "unbuilt": an `enum` says the same
+    // thing and is carried today.
+    expect_bad("result-unit.wit", &["E-OPTION-UNIT"]);
     expect_bad("list.wit", &["E-LIST"]);
     expect_bad("string.wit", &["E-STRING"]);
     expect_bad("char.wit", &["E-CHAR"]);
@@ -95,14 +99,9 @@ fn rejects_what_is_merely_unbuilt() {
     expect_bad("signed.wit", &["E-SIGNED"]);
     expect_bad("float.wit", &["E-FLOAT"]);
     expect_bad("structured.wit", &["E-STRUCTURED"]);
-    // option and result are supported where they carry the out-of-memory
-    // signal; the other positions need lowering into the heap.
-    expect_bad("nested-option.wit", &["E-OPTION"]);
-    expect_bad("option-param.wit", &["E-OPTION"]);
-    expect_bad("option-alias.wit", &["E-OPTION"]);
-    // A `result` outside the return type is one of those other positions: the
-    // channel is positional, not a shape the gate accepts wherever it reads it.
-    expect_bad("result-param.wit", &["E-OPTION"]);
+    // One sum per position is carried; one inside another is the same lift
+    // applied again, and is the next step rather than a different one.
+    expect_bad("nested-sum.wit", &["E-OPTION-NESTED"]);
     expect_bad("nullary.wit", &["E-ARITY-0"]);
     expect_bad("no-result.wit", &["E-NO-RESULT"]);
     expect_bad("multi-export.wit", &["E-MULTI-EXPORT"]);
@@ -112,36 +111,26 @@ fn rejects_what_is_merely_unbuilt() {
     }
 }
 
-/// Where an `option` sits is named, and both positions get the same code: the
-/// gate has nothing cheaper to say about a parameter than about a result,
-/// because either one has to be lowered into or lifted out of the heap.
-///
-/// Which is the general shape of nesting here -- no type former is carried
-/// inside another. The one exception is the error channel, a `result` the gate
-/// reads positionally and strips before walking what it holds, so the deepest
-/// a passing world goes is `result<scalar, error>`.
+/// A sum is carried in one position and not in another, and the difference is
+/// depth rather than shape: the same `option<u64>` is good/option.wit as a
+/// parameter and bad/nested-sum.wit inside another option. The gate decides
+/// that by counting the formers it has entered, so this pins which count is
+/// refused -- and that the position it names is the parameter rather than the
+/// whole export.
 #[test]
-fn an_option_is_refused_in_every_position() {
-    let param: Vec<_> = report(&fixture("bad", "option-param.wit"))
-        .rejections
-        .into_iter()
-        .map(|r| (r.code, r.what, r.site))
-        .collect();
-    assert_eq!(param.len(), 1, "{param:?}");
-    assert_eq!(param[0].0, "E-OPTION");
-    assert!(param[0].1.starts_with("option"), "{:?}", param[0]);
-    assert!(param[0].2.contains("param"), "{:?}", param[0]);
-
-    // Nested in the ok half of a channel that is itself fine. The channel is
-    // not what is refused -- the type it carries is.
-    let nested: Vec<_> = report(&fixture("bad", "nested-option.wit"))
+fn a_sum_is_refused_by_its_depth() {
+    let nested: Vec<_> = report(&fixture("bad", "nested-sum.wit"))
         .rejections
         .into_iter()
         .map(|r| (r.code, r.site))
         .collect();
     assert_eq!(nested.len(), 1, "{nested:?}");
-    assert_eq!(nested[0].0, "E-OPTION");
-    assert!(nested[0].1.contains("result"), "{nested:?}");
+    assert_eq!(nested[0].0, "E-OPTION-NESTED");
+    assert!(nested[0].1.contains("param `x`"), "{nested:?}");
+
+    // The error channel does not count as a level: it is read positionally
+    // and stripped, so a sum in the ok half is at the top of what is left.
+    assert!(report(&fixture("good", "option-result.wit")).is_ok());
 }
 
 #[test]

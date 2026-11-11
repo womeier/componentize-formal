@@ -1,0 +1,10 @@
+package local:ok;
+
+// Behind an alias. Resolution looks through `type` definitions, so naming an
+// option changes nothing about how it is carried -- good/alias.wit is the same
+// aliasing over a scalar.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  type maybe-int = option<u64>;
+  export unwrap: func(x: maybe-int) -> result<u64, error>;
+}

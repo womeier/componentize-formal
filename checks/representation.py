@@ -57,6 +57,11 @@ MODULE_STEM = "conformance"
 # declaration order, which is what makes `bool` the exception rather than the
 # rule. Both are upstream behaviour that can change; an adapter built on the
 # wrong one returns the other value, cheerfully.
+# A definition that *matches* on an option rather than building one, so the
+# test the backend uses to tell a pointer from an immediate can be read back
+# out of it. The adapter's lift makes the same test.
+MATCH_SOURCE = "ctor-match-option"
+
 # Where each measured immediate lives in bindgen/src/measured.rs, which
 # repr.rs holds itself to with a `const` assertion -- so a representation
 # change that reaches this file stops the generator compiling.
@@ -70,6 +75,11 @@ MEASURED_TARGETS = {
     "ctor-mixed-last": ("MIXED_NULLARY_IMMEDIATES", 1),
     "ctor-mixed-boxed-a": ("MIXED_BOXED_ORDINALS", 0),
     "ctor-mixed-boxed-b": ("MIXED_BOXED_ORDINALS", 1),
+    "ctor-none": ("OPTION_NONE_IMMEDIATE", None),
+    "ctor-some": ("OPTION_SOME_ORDINAL", None),
+    "ctor-inl": ("SUM_BOXED_ORDINALS", 0),
+    "ctor-inr": ("SUM_BOXED_ORDINALS", 1),
+    MATCH_SOURCE: ("IMMEDIATE_TAG_BIT", None),
 }
 
 CONSTRUCTORS = [
@@ -84,14 +94,27 @@ CONSTRUCTORS = [
     # not the declaration index once a constructor with arguments comes first.
     ("ctor-mixed-first", None, 0),
     ("ctor-mixed-last", None, 1),
+    # `None`, the one constructor of Stdlib's `option` that allocates nothing.
+    # It is the only nullary constructor of its type, so per-class numbering
+    # gives it ordinal 0 whichever order `option` declares its two in --- see
+    # repr.rs `sums`.
+    ("ctor-none", None, 0),
 ]
 
 # `mixed`'s two constructors *with* arguments, which carry an ordinal rather
 # than an immediate. Read by diffing the two modules against each other -- see
 # `boxed_ordinals` -- so they come as a pair, with the ordinal each must have.
-BOXED = [
-    ("ctor-mixed-boxed-a", 0),
-    ("ctor-mixed-boxed-b", 1),
+# Read pairwise, so each pair is two constructors that must differ in exactly
+# one constant. `inl`/`inr` are the pair that matters most: both are boxed, so
+# their ordinals are declaration order, and a swap upstream would exchange the
+# ok and err halves of every WIT `result`. `Some` is read against `inr`
+# because it has no boxed sibling of its own to be diffed against -- the two
+# modules are the same function but for the constructor, which is all the
+# diff needs.
+BOXED_PAIRS = [
+    (("ctor-mixed-boxed-a", 0), ("ctor-mixed-boxed-b", 1)),
+    (("ctor-inl", 0), ("ctor-inr", 1)),
+    (("ctor-some", 0), ("ctor-inr", 1)),
 ]
 
 CONST = re.compile(r'^\s*pub const (?P<name>[A-Z_]+): &str = "(?P<value>[^"]*)";', re.M)
@@ -113,6 +136,12 @@ MEASURED_ARRAY = re.compile(
 FUNC_START = re.compile(r"^  \(func \(;(?P<index>\d+);\)", re.M)
 EXPORT_FUNC = re.compile(r'\(export "(?P<name>[^"]*)" \(func (?P<index>\d+)\)\)')
 I32_CONST = re.compile(r"^\s*i32\.const (?P<value>-?\d+)\s*$", re.M)
+# The boxed/unboxed test a compiled `match` opens with: `x & mask; eqz`, the
+# bit being clear selecting the boxed branch (`LambdaANF_to_Wasm.v:349-356`).
+# The mask is what repr.rs IMMEDIATE_TAG_BIT claims.
+TAG_TEST = re.compile(
+    r"i32\.const (?P<mask>\d+)\n\s*i32\.and\n\s*i32\.eqz\n\s*if"
+)
 # The store of the code pointer into the closure `main_function` allocates:
 # `global.get 1` is the record's address, `i32.const 4 / i32.add` its second
 # word, and the constant stored there is the function the closure calls. The
@@ -325,6 +354,34 @@ def boxed_ordinals(wats: dict[str, str], stems: list[str]) -> dict[str, int]:
     return {stem: consts[stem][differ[0]] for stem in stems}
 
 
+def tag_mask(wat: str, stem: str) -> int:
+    """The mask a compiled `match` tells a pointer from an immediate with.
+
+    Read off the `match` itself rather than off a constructor: the question
+    the adapter's lift has to answer about an `option` is the one the
+    backend's own case analysis answers, and the two must answer it the same
+    way or they disagree about which constructor a value is.
+
+    Every occurrence has to use the same mask. The definition compiled here
+    has one `match` in it, but the pipeline is free to emit more code around
+    it, and a module where two tests disagree is one nothing can be concluded
+    from.
+    """
+    masks = {int(m.group("mask")) for m in TAG_TEST.finditer(wat)}
+    if not masks:
+        raise Mismatch(
+            f"{stem}: found no `and`/`eqz` pair opening a case analysis, so "
+            "the pattern this check reads the boxed/unboxed test with no "
+            "longer matches what the backend emits for a `match`."
+        )
+    if len(masks) != 1:
+        raise Mismatch(
+            f"{stem}: the module tests the tag bit against {sorted(masks)} in "
+            "different places, so there is no single mask to read."
+        )
+    return masks.pop()
+
+
 def measured_values(path: Path) -> dict[str, int]:
     """What bindgen/src/measured.rs records, keyed by --output stem."""
     text = path.read_text()
@@ -385,9 +442,18 @@ def check_constructors(repr_text: str, names: dict[str, str], wats: dict[str, st
     ordinals = {
         m.group("name"): int(m.group("ordinal")) for m in ORDINAL_CONST.finditer(repr_text)
     }
+    declared_bit = re.search(r"pub const IMMEDIATE_TAG_BIT: u32 = (\d+);", repr_text)
+    if declared_bit is None:
+        raise Mismatch(
+            "repr.rs no longer defines IMMEDIATE_TAG_BIT; this check cannot "
+            "verify a constant it cannot read."
+        )
+    tag_bit = int(declared_bit.group(1))
 
-    found = dict(boxed_ordinals(wats, [stem for stem, _ in BOXED]))
-    for stem, ordinal in BOXED:
+    found = {}
+    for pair in BOXED_PAIRS:
+        found.update(boxed_ordinals(wats, [stem for stem, _ in pair]))
+    for stem, ordinal in [c for pair in BOXED_PAIRS for c in pair]:
         if found[stem] != ordinal:
             problems.append(
                 f"{stem}: the backend uses ordinal {found[stem]}, but "
@@ -395,6 +461,16 @@ def check_constructors(repr_text: str, names: dict[str, str], wats: dict[str, st
                 "with arguments is found by its ordinal in the block's first "
                 "cell, so the wrong one names a different constructor."
             )
+
+    found[MATCH_SOURCE] = tag_mask(wats[MATCH_SOURCE], MATCH_SOURCE)
+    if found[MATCH_SOURCE] != tag_bit:
+        problems.append(
+            f"{MATCH_SOURCE}: the backend's own `match` tests the tag bit "
+            f"against {found[MATCH_SOURCE]}, but repr.rs IMMEDIATE_TAG_BIT is "
+            f"{tag_bit}. A lift that masks with the wrong bit calls a pointer "
+            "an immediate, or the other way about, and reads the value at a "
+            "constructor it is not."
+        )
     for stem, const, ordinal in CONSTRUCTORS:
         found[stem] = returned_immediate(names, wats[stem], stem)
         if const is not None:
@@ -530,7 +606,9 @@ def main() -> int:
             problems = check(names, disassemble(shape[MODULE_STEM]))
         with tempfile.TemporaryDirectory() as tmp:
             stems = [stem for stem, _, _ in CONSTRUCTORS]
-            stems += [stem for stem, _ in BOXED]
+            stems += [stem for pair in BOXED_PAIRS for stem, _ in pair]
+            stems.append(MATCH_SOURCE)
+            stems = list(dict.fromkeys(stems))
             modules = compile_wasm(args.constructor_source, Path(tmp), stems)
             ctor_problems, found = check_constructors(
                 repr_text,
@@ -574,8 +652,11 @@ def main() -> int:
     checked = ", ".join(names[c] for c in BACKEND_EXPORTS)
     print(f"repr.rs agrees with CertiRocq: {checked}, no imports, one memory,")
     print("type index n taking n i32s, the nullary constructors of `bool`")
-    print("(swapped) and a three-case inductive (not swapped), and the")
-    print("independent boxed and unboxed ordinals of a type mixing both.")
+    print("(swapped) and a three-case inductive (not swapped), the")
+    print("independent boxed and unboxed ordinals of a type mixing both, and")
+    print("Stdlib `option` and `sum` -- `None`'s immediate, `Some`, `inl` and")
+    print("`inr`'s ordinals, and the mask a compiled `match` tells a pointer")
+    print("from an immediate with.")
     return 0
 
 

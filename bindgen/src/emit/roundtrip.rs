@@ -22,6 +22,15 @@
 //! compare against but its own input. What the check does restate is the
 //! boundaries it will not run without -- see `checks/roundtrip.py`.
 //!
+//! **What is not here.** A sum -- a WIT `option`, or a `result` in a value
+//! position. Its canonical form is a discriminant and a payload at byte
+//! offsets, not one core value, so "the same function in both orders, each
+//! taking and returning a value" cannot be written for it: the export would
+//! have to return two things. Running those both ways needs a caller that can
+//! read memory, which is `checks/backend.py` driving a real component, and
+//! that is where they are run. The import direction of a sum therefore has no
+//! evidence here -- see TODO.md#imports.
+//!
 //! **Where it is the identity.** On the values the type actually has. A
 //! canonical `bool` is 0 or 1; the canonical ABI lifts *any* non-zero byte as
 //! `true`, so `to_rocq` normalises 2 to `true` and the trip back gives 1
@@ -32,7 +41,7 @@ use std::fmt::Write;
 
 use serde::Serialize;
 
-use super::plan::{Plan, Repr};
+use super::plan::{Cells, Plan, Repr};
 use super::{comment, convert, MARKER};
 use crate::repr;
 
@@ -60,6 +69,22 @@ pub struct Pair {
     pub rocq_values: Vec<String>,
 }
 
+/// A type the harness has no round trip for.
+///
+/// In the manifest so that a world carrying nothing else -- `option<u64>` in
+/// and out, say -- is distinguishable from a generator that emitted nothing:
+/// one is a harness with nothing to run, the other is a bug, and an empty
+/// manifest alone cannot tell the check which it is looking at.
+#[derive(Debug, Clone, Serialize)]
+pub struct Skipped {
+    /// How the type reads in the world.
+    pub wit: String,
+    /// The Rocq type carrying it.
+    pub rocq_type: String,
+    /// Why there is no round trip, and what runs the conversion instead.
+    pub reason: &'static str,
+}
+
 /// The harness module, and the manifest describing what to call in it.
 pub fn module(plan: &Plan) -> (String, Vec<Pair>) {
     // One pair per distinct representation the world carries, parameters and
@@ -73,6 +98,14 @@ pub fn module(plan: &Plan) -> (String, Vec<Pair>) {
         .map(|p| &p.repr)
         .chain([&plan.export.ok])
     {
+        // Sums are not here, and the omission is the point of the note in the
+        // module docs above: a round trip through one core value cannot
+        // express a value whose canonical form is a discriminant and a payload
+        // at byte offsets. `checks/backend.py` runs those both ways against
+        // the real backend instead.
+        if matches!(repr, Repr::Sum(_)) {
+            continue;
+        }
         let this = pair(repr);
         if !pairs.iter().any(|(p, _)| p.rocq_type == this.rocq_type) {
             pairs.push((this, repr.clone()));
@@ -147,12 +180,14 @@ pub fn manifest(plan: &Plan, pairs: &[Pair]) -> String {
         world: &'a str,
         signature: &'a str,
         pair: &'a [Pair],
+        skipped: Vec<Skipped>,
     }
 
     let doc = toml::to_string_pretty(&Manifest {
         world: &plan.world_name,
         signature: &plan.export.signature,
         pair: pairs,
+        skipped: skipped(plan),
     })
     .expect("a manifest of strings and numbers always serialises");
 
@@ -167,6 +202,32 @@ pub fn manifest(plan: &Plan, pairs: &[Pair]) -> String {
             "reads it.".to_string(),
         ])
     )
+}
+
+/// The types `module` passed over, in the order the world mentions them and
+/// deduplicated by Rocq type, as the pairs are.
+fn skipped(plan: &Plan) -> Vec<Skipped> {
+    let mut out: Vec<Skipped> = Vec::new();
+    for repr in plan
+        .export
+        .params
+        .iter()
+        .map(|p| &p.repr)
+        .chain([&plan.export.ok])
+    {
+        let Repr::Sum(sum) = repr else { continue };
+        if out.iter().any(|s| s.rocq_type == sum.rocq_type) {
+            continue;
+        }
+        out.push(Skipped {
+            wit: sum.wit.clone(),
+            rocq_type: sum.rocq_type.clone(),
+            reason: "a discriminant and a payload at byte offsets is not one core value, \
+                     so there is no function to compose with itself; checks/backend.py \
+                     runs both directions against the real backend instead",
+        });
+    }
+    out
 }
 
 fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
@@ -186,7 +247,7 @@ fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
         pair.canonical
     )
     .unwrap();
-    let there = convert::to_rocq(repr, "(local.get $v)", Some("(global.get $box_a)"));
+    let there = convert::to_rocq(repr, &[sent(repr)], &cells(repr), box_a());
     for line in &there.prologue {
         writeln!(out, "    {line}").unwrap();
     }
@@ -217,6 +278,7 @@ fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
                 ),
                 "out to the canonical ABI and back.".into(),
             ],
+            Repr::Sum(sum) => unreachable!("`{}` has no single-value round trip", sum.wit),
         },
     ));
     writeln!(
@@ -228,8 +290,9 @@ fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
     // The Rocq-side value to start from. For a boxed representation that
     // means building one, which is `to_rocq` -- setup, not the trip.
     let start = match repr {
+        Repr::Sum(sum) => unreachable!("`{}` has no single-value round trip", sum.wit),
         Repr::Int63 => {
-            let build = convert::to_rocq(repr, "(local.get $v)", Some("(global.get $box_a)"));
+            let build = convert::to_rocq(repr, &[sent(repr)], &cells(repr), box_a());
             for line in &build.prologue {
                 writeln!(out, "    {line}").unwrap();
             }
@@ -241,7 +304,15 @@ fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
     for line in &out_.prologue {
         writeln!(out, "    {line}").unwrap();
     }
-    let home = convert::to_rocq(repr, &out_.value, Some("(global.get $box_b)"));
+    let home = convert::to_rocq(
+        repr,
+        &[convert::Flat {
+            value: out_.value.clone(),
+            wasm: convert::core_type(repr),
+        }],
+        &cells(repr),
+        box_b(),
+    );
     for line in &home.prologue {
         writeln!(out, "    {line}").unwrap();
     }
@@ -250,8 +321,34 @@ fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
     let observable = match repr {
         Repr::Int63 => format!("(i64.load {})", home.value),
         Repr::Bool | Repr::Enum { .. } => home.value.clone(),
+        Repr::Sum(sum) => unreachable!("`{}` has no single-value round trip", sum.wit),
     };
     writeln!(out, "    {observable})\n").unwrap();
+}
+
+/// The harness's parameter, as the conversion reads it.
+fn sent(repr: &Repr) -> convert::Flat {
+    convert::Flat {
+        value: "(local.get $v)".into(),
+        wasm: convert::core_type(repr),
+    }
+}
+
+/// Where a boxed payload goes. The harness has one cell per box and nothing
+/// nested to put in it, since a sum never gets here.
+fn cells(repr: &Repr) -> Cells {
+    match repr {
+        Repr::Int63 => Cells::Payload(0),
+        _ => Cells::Nothing,
+    }
+}
+
+fn box_a() -> convert::Base<'static> {
+    convert::Base("(global.get $box_a)")
+}
+
+fn box_b() -> convert::Base<'static> {
+    convert::Base("(global.get $box_b)")
 }
 
 /// The values a representation's round trip is run with, and the names of its
@@ -288,6 +385,8 @@ fn pair(repr: &Repr) -> Pair {
                 .map(|d| repr::nullary_immediate(d).to_string())
                 .collect(),
         ),
+        // `module` filters these out before getting here.
+        Repr::Sum(sum) => unreachable!("`{}` has no single-value round trip", sum.wit),
     };
     Pair {
         canonical: format!("canonical_{rocq_type}"),

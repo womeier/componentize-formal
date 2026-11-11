@@ -26,7 +26,8 @@ section.
 | --- | --- | --- |
 | `E-ARITY-0`, `E-NO-RESULT` | exports with no parameters, or no result | [planned, phase 2](#arity) |
 | `E-MULTI-EXPORT` | more than one exported function | [planned, phase 2](#multi-export) |
-| `E-OPTION` | `option`/`result` as a parameter or nested | [planned, phase 2](#option-result) |
+| `E-OPTION-NESTED` | a sum inside another sum | [planned, phase 2](#option-result) |
+| `E-OPTION-UNIT` | `result` with a payload in neither case | [rejected outright](#option-result) |
 | `E-STRUCTURED` | `record`, `tuple`, `variant` | [planned, phase 3](#structured-types) |
 | `E-INT-WIDTH` | `u8`, `u16`, `u32` | [wanted, not scheduled](#integer-widths) |
 | `E-SIGNED` | `s8`, `s16`, `s32`, `s64` | [wanted, not scheduled](#signed-integers) |
@@ -635,22 +636,56 @@ get its closure and proceeds as the one-export case does. A Rocq tuple would
 walk instead of a flat index. `n = 1` skips the wrapper, keeping the generated
 adapter comparable to the hand-written `plus1` one.
 
-### <a id="option-result"></a>`option` and `result` as values — `E-OPTION`, phase 2
+### <a id="option-result"></a>`option` and `result` as values — `E-OPTION-NESTED`, `E-OPTION-UNIT`
 
 The outermost `result<T, error>` of an export is [the failure
-channel](#failure-channel) and is handled. An `option` or `result` anywhere
-else is an ordinary value and needs lowering into, or lifting out of, the heap.
+channel](#failure-channel). An `option` or `result` anywhere else is an
+ordinary value, and **one of them per position is carried** — in a parameter,
+or in the ok half of the channel. What is left is the nesting:
+`option<option<u64>>` is `E-OPTION-NESTED`.
 
-That is much cheaper than the general [structured-type](#structured-types)
-work, because their shapes are fixed and their ordinals are known rather than
-derived:
+This is much cheaper than the general [structured-type](#structured-types)
+work, because the shapes are fixed and the ordinals are known rather than
+derived. Four WIT spellings land on two Stdlib types, and which constructor
+carries which case is a table rather than a formula — the `result` rows map
+`ok` to opposite constructors:
 
-| | CertiRocq | WIT |
-| --- | --- | --- |
-| `None` / `err` with no payload | nullary, unboxed ordinal 0 → immediate `1` | discriminant 0 |
-| `Some x` / `ok x` | boxed ordinal 0 → pointer to `[0, x]` | discriminant 1, payload |
+| WIT | Rocq | discriminant 0 | discriminant 1 |
+| --- | --- | --- | --- |
+| `option<T>` | `option T` | `none` → `None` | `some` → `Some` |
+| `result<T, E>` | `sum T E` | `ok` → `inl` | `err` → `inr` |
+| `result<T>` | `option T` | `ok` → `Some` | `err` → `None` |
+| `result<_, E>` | `option E` | `ok` → `None` | `err` → `Some` |
 
-So no layout algorithm is needed, just the two cases.
+The generated `interface.v` writes that mapping next to the signature, because
+nothing else in the pipeline would tell you that the ok half of a `result<T>`
+is `Some x`.
+
+A `result` with a payload in **neither** case is `E-OPTION-UNIT` rather than
+deferred work: there is no value to carry and no Stdlib sum to carry it in. An
+`enum` of two cases says the same thing and is carried today — and `bool`, the
+obvious thing to reach for instead, is the one inductive whose ordinals are
+swapped, so carrying it there would exchange the two cases.
+
+Two facts the emitter rests on, both measured by
+[`checks/representation.py`](checks/representation.py) rather than assumed:
+
+| | CertiRocq |
+| --- | --- |
+| a case with no payload | nullary, unboxed ordinal 0 → immediate `1` |
+| a case with one | boxed ordinal 0 or 1 → pointer to `[ord, x]` |
+
+So a sum is a pointer *or* an immediate depending on which case it holds, and
+the tag bit (`x & 1`, clear for a pointer) tells them apart — the same test
+the backend's own `match` makes. With one case of each kind that bit is the
+whole lift; with both boxed, as a `result<T, E>` is, the ordinal in the first
+cell picks the case and an immediate arriving there is impossible rather than
+merely unexpected, so it traps.
+
+Lowering is guarded the other way round. The canonical ABI zero-pads the flat
+slots of the case that was *not* sent, so a `u64` payload's range check runs
+under the discriminant that makes the payload live — a failure concluded from
+padding would be invented.
 
 ### <a id="structured-types"></a>Records, tuples and variants — `E-STRUCTURED`, phase 3
 

@@ -1,0 +1,15 @@
+package local:backend;
+
+// An `option` argument: the two-case sum whose cases are one of each
+// CertiRocq kind, so what the adapter builds is a pointer for one case and an
+// immediate for the other, and the result is a `u64` -- another
+// representation, so an error in the sum cannot be undone by the same error on
+// the way out.
+//
+// `none` and `some` answer differently and neither answer is the payload
+// unchanged, so a lowering that built the wrong constructor is visible: the
+// `match` on the Rocq side would take the other branch.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export unwrap-or: func(x: option<u64>) -> result<u64, error>;
+}

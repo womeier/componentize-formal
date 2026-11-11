@@ -1,0 +1,11 @@
+package local:bad;
+
+// A `result` with a payload in neither case, as a value. There is nothing to
+// lift or lower and no Stdlib sum to carry it in: two payload-less
+// constructors is an `enum`, and `bool` -- the obvious candidate -- is the one
+// inductive whose ordinals are swapped, so carrying it there would exchange
+// the two cases.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export ping: func(x: result) -> result<u64, error>;
+}

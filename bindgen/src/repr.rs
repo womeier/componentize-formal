@@ -103,6 +103,63 @@ const _: () = {
     assert!(nullary_immediate(2) == want[2]);
 };
 
+/// Boxed or immediate, which is the first question a lift has to answer about
+/// a value whose type has both kinds of constructor.
+///
+/// A pointer is 4-byte aligned and an immediate is `2*ord+1`, so the low bit
+/// tells them apart. That is not an inference from the two encodings: it is
+/// what the backend's own `match` does. `Ecase`
+/// (`LambdaANF_to_Wasm.v:349-356`) emits
+///
+/// ```text
+///   local.get x; i32.const 1; i32.and; i32.eqz
+///   if   <chain comparing the ordinal loaded from memory>
+///   else <chain comparing the immediate 2*ord+1>
+/// ```
+///
+/// so the bit being *clear* selects the boxed branch. An adapter lifting an
+/// `option` makes the same test, and `checks/representation.py` reads the mask
+/// back out of a compiled `match` rather than trusting this line.
+pub const IMMEDIATE_TAG_BIT: u32 = 1;
+const _: () = assert!(IMMEDIATE_TAG_BIT == crate::measured::IMMEDIATE_TAG_BIT);
+
+/// The two standard-library inductives a WIT `option` and `result` are carried
+/// in (`TODO.md#option-result`).
+///
+/// Neither is declared by anything this generator writes: they come out of the
+/// standard library through erasure, so `bool`'s remapping
+/// ([`BOOL_FALSE`]) is a thing that could in principle happen to them too.
+/// Which is why they are measured -- `checks/rocq/constructors.v` builds each
+/// constructor and `checks/representation.py` reads the result back.
+///
+/// The two are not equally exposed, and the difference is worth stating
+/// because it is what makes `sum` the one to watch:
+///
+/// * `option` has one constructor of each kind -- `Some` boxed, `None`
+///   nullary -- and [`ordinal`] numbers the kinds independently, so each is
+///   ordinal 0 whatever order they are declared in. No reordering of `option`
+///   can change what is emitted.
+/// * `sum`'s `inl` and `inr` are both boxed, so they are ordinals 0 and 1 *in
+///   declaration order*. Swapping them would exchange the ok and err halves of
+///   every WIT `result` while type-checking perfectly.
+pub mod sums {
+    /// `Some x` and `inl x`: the first boxed constructor of their type.
+    pub const SOME_ORDINAL: u32 = 0;
+    pub const INL_ORDINAL: u32 = 0;
+    /// `inr x`, the second.
+    pub const INR_ORDINAL: u32 = 1;
+    /// `None`, which allocates nothing.
+    pub const NONE_IMMEDIATE: u32 = super::nullary_immediate(0);
+
+    const _: () = assert!(NONE_IMMEDIATE == crate::measured::OPTION_NONE_IMMEDIATE);
+    const _: () = assert!(SOME_ORDINAL == crate::measured::OPTION_SOME_ORDINAL);
+    const _: () = {
+        let want = crate::measured::SUM_BOXED_ORDINALS;
+        assert!(INL_ORDINAL == want[0]);
+        assert!(INR_ORDINAL == want[1]);
+    };
+}
+
 /// A non-nullary constructor is a pointer to `[ord, f0, f1, ...]`, one 4-byte
 /// cell each (`LambdaANF_to_Wasm.v:161`).
 pub const BOXED_ORDINAL_OFFSET: u32 = 0;
@@ -210,6 +267,38 @@ mod tests {
         // `None` first, then `Some _`.
         assert_eq!(ordinal::assign(&[0, 1]), vec![(0, false), (0, true)]);
         assert_eq!(nullary_immediate(0), 1, "None is the immediate 1");
+    }
+
+    /// `option` and `sum` as the generator carries a WIT `option` and
+    /// `result`, with the ordinals following from the class split rather than
+    /// from declaration order -- except in `sum`, where they *are*
+    /// declaration order, which is why that is the one measured against the
+    /// backend ([`sums`]).
+    #[test]
+    fn option_and_sum_ordinals_follow_the_classes() {
+        // Rocq declares `Some` first, which does not matter: one constructor
+        // of each kind means each is ordinal 0 either way round.
+        assert_eq!(ordinal::assign(&[1, 0]), vec![(0, true), (0, false)]);
+        assert_eq!(ordinal::assign(&[0, 1]), vec![(0, false), (0, true)]);
+        assert_eq!(sums::SOME_ORDINAL, 0);
+        assert_eq!(sums::NONE_IMMEDIATE, 1);
+
+        // `inl _ | inr _`: both boxed, so here the order is the ordinal.
+        assert_eq!(ordinal::assign(&[1, 1]), vec![(0, true), (1, true)]);
+        assert_eq!((sums::INL_ORDINAL, sums::INR_ORDINAL), (0, 1));
+    }
+
+    /// The tag bit separates the two encodings on every value either can
+    /// take: an immediate is odd by construction, a cell address is a multiple
+    /// of [`CELL`].
+    #[test]
+    fn the_tag_bit_separates_immediates_from_pointers() {
+        for ordinal in 0..8 {
+            assert_eq!(nullary_immediate(ordinal) & IMMEDIATE_TAG_BIT, 1);
+        }
+        for cell in 0..8 {
+            assert_eq!((cell * CELL) & IMMEDIATE_TAG_BIT, 0);
+        }
     }
 
     /// A type mixing boxed and unboxed constructors numbers each class from

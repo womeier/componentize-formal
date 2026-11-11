@@ -1,0 +1,10 @@
+package local:ok;
+
+// A `result` is the error channel only as the *return* type of the export.
+// Anywhere else it is an ordinary two-case sum, carried in Rocq's `sum` -- and
+// here the error enum itself is the value in the err half, which the generator
+// declares an inductive for just as it would any other enum.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export retry: func(previous: result<u64, error>) -> result<u64, error>;
+}

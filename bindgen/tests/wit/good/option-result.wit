@@ -1,0 +1,9 @@
+package local:ok;
+
+// A sum in the ok half of the channel. The channel is read positionally and
+// stripped, so what is left is an ordinary value in the result position --
+// which is the lift, the direction the parameter fixtures do not exercise.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export lookup: func(k: u64) -> result<option<u64>, error>;
+}

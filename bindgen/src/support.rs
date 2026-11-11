@@ -300,7 +300,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
             resolve,
             p.ty,
             Pos::Param,
-            true,
+            0,
             &format!("export {name}: param `{}`", p.name),
             rep,
         );
@@ -328,7 +328,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
                     resolve,
                     ok,
                     Pos::Result,
-                    true,
+                    0,
                     &format!("export {name}: result"),
                     rep,
                 );
@@ -342,10 +342,10 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
             match payloads(resolve, result) {
                 Some(payloads) => {
                     for ty in payloads {
-                        walk(resolve, ty, Pos::Result, false, &site, rep);
+                        walk(resolve, ty, Pos::Result, 1, &site, rep);
                     }
                 }
-                None => walk(resolve, result, Pos::Result, true, &site, rep),
+                None => walk(resolve, result, Pos::Result, 0, &site, rep),
             }
             let listed = failures
                 .iter()
@@ -379,6 +379,21 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
                 ),
             }
         }
+    }
+}
+
+/// Can a value of this type carry a `u64`, at any depth?
+///
+/// The question `failure_modes` has to answer about a parameter, and the
+/// reason it is recursive: the range check is on the primitive int, wherever
+/// in the value it sits.
+fn carries_u64(resolve: &Resolve, ty: Type) -> bool {
+    match resolved(resolve, ty) {
+        Type::U64 => true,
+        _ => match payloads(resolve, ty) {
+            Some(payloads) => payloads.into_iter().any(|ty| carries_u64(resolve, ty)),
+            None => false,
+        },
     }
 }
 
@@ -465,8 +480,16 @@ fn is_abi_error(resolve: &Resolve, ty: Type) -> bool {
 pub fn failure_modes(resolve: &Resolve, f: &Function) -> Vec<Failure> {
     let mut failures = vec![Failure::OutOfMemory];
     for p in &f.params {
+        // A `u64` inside an `option` is the same primitive int and the same
+        // failure; what differs is only how it reads, so the two spellings are
+        // kept apart rather than one covering both.
         if matches!(resolved(resolve, p.ty), Type::U64) {
             failures.push(Failure::OutOfRange(format!("`{}` >= 2^63", p.name)));
+        } else if carries_u64(resolve, p.ty) {
+            failures.push(Failure::OutOfRange(format!(
+                "a `u64` inside `{}` >= 2^63",
+                p.name
+            )));
         }
     }
     failures
@@ -494,7 +517,13 @@ fn show(resolve: &Resolve, ty: Type) -> String {
 }
 
 /// Walk a type, rejecting anything we cannot lift or lower.
-fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut Report) {
+///
+/// `depth` counts the type formers entered: zero is the parameter or result
+/// itself, one is the payload of a sum, and so on. It is what decides how
+/// deeply an `option` may be nested (TODO.md#option-result) -- the only
+/// question here whose answer depends on where a type sits rather than on what
+/// it is.
+fn walk(resolve: &Resolve, ty: Type, pos: Pos, depth: usize, site: &str, rep: &mut Report) {
     match ty {
         // Integers are carried by Rocq's primitive 63-bit ints, and u64 is the
         // only width wired up so far.
@@ -567,7 +596,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, top: bool, site: &str, rep: &mut 
             "async",
             "part of the async ABI",
         ),
-        Type::Id(id) => walk_id(resolve, id, pos, top, site, rep),
+        Type::Id(id) => walk_id(resolve, id, pos, depth, site, rep),
     }
 }
 
@@ -581,28 +610,55 @@ fn describe(def: &wit_parser::TypeDef) -> String {
     }
 }
 
-fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, top: bool, site: &str, rep: &mut Report) {
+fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, depth: usize, site: &str, rep: &mut Report) {
     let def = &resolve.types[id];
     let shown = describe(def);
 
     match &def.kind {
-        TypeDefKind::Type(inner) => walk(resolve, *inner, pos, top, site, rep),
+        TypeDefKind::Type(inner) => walk(resolve, *inner, pos, depth, site, rep),
 
         // All-nullary inductive: the tagged immediate 2*ord+1 on our side, a
         // discriminant on theirs. Cheapest structured type there is.
         TypeDefKind::Enum(_) => {}
 
         // The error channel is handled before the walk gets here, so an
-        // option or result at this point is an ordinary structured type.
-        TypeDefKind::Option(_) | TypeDefKind::Result(_) => rep.reject(
-            "E-OPTION",
+        // `option` or `result` at this point is an ordinary value -- carried
+        // in one of the standard library's two-case sums, which is what makes
+        // this cheaper than the general structured types: the shapes are fixed
+        // and the ordinals are known rather than derived
+        // (TODO.md#option-result).
+        //
+        // One inside another is the same lift and lower applied again, and is
+        // the next step rather than a different one.
+        TypeDefKind::Option(_) | TypeDefKind::Result(_) if depth > 0 => rep.reject(
+            "E-OPTION-NESTED",
             shown.clone(),
             site.to_string(),
             Reason::Planned(2),
             "option-result",
-            "needs lowering into, or lifting out of, the heap; cheaper than the general \
-             structured types because the shapes are fixed and the ordinals known",
+            "a sum inside another sum is not carried yet; one at the top of a parameter \
+             or of the ok half is",
         ),
+        TypeDefKind::Option(inner) => walk(resolve, *inner, pos, depth + 1, site, rep),
+        // A `result` with a payload in neither case carries no value at all,
+        // and there is no Stdlib sum to carry it in: two payload-less
+        // constructors is an `enum`, and the obvious candidate -- `bool` -- is
+        // the one inductive whose ordinals are swapped, so it would exchange
+        // the two cases.
+        TypeDefKind::Result(r) if r.ok.is_none() && r.err.is_none() => rep.reject(
+            "E-OPTION-UNIT",
+            shown.clone(),
+            site.to_string(),
+            Reason::Malformed,
+            "option-result",
+            "both cases carry nothing, so there is nothing to lift or lower; an `enum` \
+             of two cases says the same thing and keeps its order",
+        ),
+        TypeDefKind::Result(r) => {
+            for ty in r.ok.into_iter().chain(r.err) {
+                walk(resolve, ty, pos, depth + 1, site, rep);
+            }
+        }
 
         TypeDefKind::Record(_) | TypeDefKind::Tuple(_) | TypeDefKind::Variant(_) => rep.reject(
             "E-STRUCTURED",

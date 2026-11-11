@@ -31,3 +31,18 @@ pub const MIXED_NULLARY_IMMEDIATES: [u32; 2] = [1, 3];
 /// order. They reuse the numbers the nullary ones already have, and only the
 /// tag bit separates them --- see [`crate::repr::ordinal`].
 pub const MIXED_BOXED_ORDINALS: [u32; 2] = [0, 1];
+
+/// Stdlib `option`'s `None`: the immediate a lift sees when the option is
+/// empty. `Some`'s ordinal, read against `inr`'s --- the two modules differ in
+/// exactly that constant. See [`crate::repr::sums`].
+pub const OPTION_NONE_IMMEDIATE: u32 = 1;
+pub const OPTION_SOME_ORDINAL: u32 = 0;
+
+/// Stdlib `sum`'s `inl` and `inr`, in declaration order. Both are boxed, so
+/// these are the ordinals a WIT `result`'s ok and err halves are built with,
+/// and a swap upstream would exchange them.
+pub const SUM_BOXED_ORDINALS: [u32; 2] = [0, 1];
+
+/// The mask the backend's own `match` tells a pointer from an immediate with,
+/// read back off a compiled `match` on an `option`.
+pub const IMMEDIATE_TAG_BIT: u32 = 1;
