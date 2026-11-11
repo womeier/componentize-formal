@@ -33,6 +33,8 @@ conversion in one direction only:
             flip        where both cases are boxed and the ordinal in the
                         block picks one
             dig         a sum inside a sum, in both positions
+            shade       an `enum` inside a sum, where the block's field holds
+                        an immediate rather than a pointer
 
 Each case is a world and an `impl.v` and nothing else: the interface, the
 extraction, the adapter and the build rules are generated, and `make` is what
@@ -141,6 +143,10 @@ EXPECTED: dict[str, dict] = {
         "answers": [
             ("none", "ok(7)"),
             ("some(3)", "ok(3)"),
+            # The last `u64` that has a `Uint63.int`. The check is against
+            # 2^63, so this one has to pass -- a boundary written one too low
+            # rejects a value the Rocq side can hold.
+            ("some(9223372036854775807)", "ok(9223372036854775807)"),
             # The payload's range check, which runs under the discriminant
             # that makes the payload live: an `option<u64>` can carry a `u64`
             # with no `Uint63.int` exactly when it is `some`.
@@ -160,6 +166,16 @@ EXPECTED: dict[str, dict] = {
             ("ok(0)", "ok(err(true))"),
             ("err(true)", "ok(ok(1))"),
             ("err(false)", "ok(ok(0))"),
+        ],
+    },
+    "sum-enum": {
+        "export": "shade",
+        "pins": [("Sum", "param"), ("Enum", "param"), ("Enum", "result")],
+        "answers": [
+            ("none", "ok(some(red))"),
+            ("some(red)", "ok(some(blue))"),
+            ("some(green)", "ok(none)"),
+            ("some(blue)", "ok(some(green))"),
         ],
     },
     "sum-nested": {

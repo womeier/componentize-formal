@@ -1,0 +1,11 @@
+package local:ok;
+
+// A sum whose payload is an immediate rather than a pointer: the `some` case
+// is still a boxed `[ord, field]`, but the field holds `2*ord+1` and nothing
+// else is allocated. Also a sum that carries no `u64`, so nothing about it can
+// be out of range -- which is the half of the failure list that could go
+// wrong quietly.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export flip: func(x: option<bool>) -> result<option<bool>, error>;
+}

@@ -330,6 +330,7 @@ emitted.
 | `unwrap-or`, `halve` | `option`'s two kinds of case in one type — the immediate `None` and the boxed `Some` — one position each | runs |
 | `flip` on a `result<u64, bool>` | `inl` and `inr`, the ordinals a swap upstream would exchange, mapped both ways in one call | runs |
 | `dig` on an `option<option<u64>>` | a sum inside a sum: the inner constructor built where the outer one's field is written, the payload lifted through two blocks | runs |
+| `shade` on an `option<colour>` | a sum whose payload is an *immediate*: the one shape where a boxed constructor's field is `2*ord+1` rather than a pointer, permuted so no case answers as another | runs |
 | one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged | with the reset |
 | two and three exports | `MkExports` field offsets | with [several exports](#multi-export) |
 | `f64` round-trip | the boxed float | with `wasm-prim-floats` (phase 4) |
