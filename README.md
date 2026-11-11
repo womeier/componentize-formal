@@ -2,47 +2,34 @@
 
 [![CI](https://github.com/womeier/componentize-formal/actions/workflows/ci.yml/badge.svg)](https://github.com/womeier/componentize-formal/actions/workflows/ci.yml)
 
-Turn a WIT world into a Wasm component whose implementation you write in a
-proof assistant, compiled by CertiRocq's verified Wasm backend. Rocq today;
-which proof assistant it is affects only two generated files, so
-[Lean fits](TODO.md#frontends) without disturbing the rest.
+This project is a WIP. Don't expect a stable CLI interface.
 
-The *formal* in the name is about where the code comes from, not a claim that
-the component is verified end to end: the backend's compilation is proved
-correct, the canonical-ABI glue this tool generates is
-[trusted](TODO.md#verified-glue).
+## Overview
+This tool allows developing formally-verified [Wasm components](https://component-model.bytecodealliance.org/) in Rocq.
+What componentize-js is to JavaScript, this tool is for theorem provers like Rocq or Lean.
+It requires a `.wit` file describing the Wasm component interface, for which it generates a
+project scaffolding with Rocq functions of the respective types, and a setup to build a Wasm component corresponding to the interface.
+Support for Lean and Agda may be added in the future, since they are supported [Peregrine](https://peregrine-project.github.io/) frontends.
 
-Given `world.wit`, the generator emits
+## Verification status
+The extraction from Rocq to a Wasm module is verified.
+All other steps in turning that module into a component are not yet verified.
+The intention is that there should be no crashes or silent failures.
 
-- `interface.v` — a `Module Type` carrying the WIT signature as Rocq types, so Rocq
-  checks your implementation against the interface at `rocq c` time;
-- `extraction.v` — the `CertiRocq Compile Wasm` invocation, with your flags;
-- `adapter.wat` — glue bridging the backend's value representation and the
-  component model's canonical ABI;
-- a `Makefile` that runs `rocq c`, then `wasm-merge`, then `wasm-tools component
-  embed` and `component new`.
+## Quickstart
+See [`examples/plus1`](examples/plus1) for the whole pipeline end to end, including the
+hand-written glue the generator is checked against.
 
-You write one file: `impl.v`.
+## How to use
+Given `world.wit`, the generator emits:
+- `interface.v`: a `Module Type` carrying the WIT signature as Rocq types
+- `extraction.v`: the `CertiRocq Compile Wasm` invocation, with your flags
+- `adapter.wat`: glue bridging the backend's value representation and the component model's canonical ABI;
+- `Makefile`: to build the component
 
-Nothing is generated for a world the backend cannot honour. The support gate
-runs first, every time, and reports precisely what it turns away, pointing at
-the matching section of [`TODO.md`](TODO.md):
-
+You write one file: `impl.v`, and `generate` writes the project:
 ```
-$ nix develop
-$ cd bindgen && cargo run -- check --wit world.wit
-error[E-NO-CHANNEL]: a result type with no error channel is not supported
-  --> export plus1: result
-  = cannot be compiled: every export must return result<T, error> with
-    certirocq:abi/errors@0.1.0.error, because this call can fail with: out of
-    memory, out of range (`val` >= 2^63)
-  = see TODO.md#failure-channel
-```
-
-Fix that, and `generate` writes the project:
-
-```
-$ componentize-formal generate --wit wit --out-dir .
+$ componentize-formal generate --wit <file> --out-dir .
   interface.v                        the world as a Rocq Module Type
   extraction.v                       the CertiRocq Compile Wasm invocation
   adapter.wat                        canonical-ABI glue
@@ -52,21 +39,9 @@ $ componentize-formal generate --wit wit --out-dir .
 Write impl.v implementing `Module Type WrapperWorld`, then `make` in .
 ```
 
-`impl.v` is yours and is never written. Everything else carries a
-`componentize-formal generate` line, and a file without one stops the run
-before anything at all is written — `--force` overwrites it anyway. The
-vendored error package is written only if it is missing, since it is an input
-to the component build rather than output.
-
-Correctness is the point — see [no silent failure](TODO.md#no-silent-failure).
-
-## Every export returns `result<T, error>`
-
-Every call can fail: `main_function` runs the whole program and the adapter
-allocates the area it returns through. So a world declares the error type this
-repo ships, and the gate rejects a return type that cannot report the failures
-the signature can produce:
-
+### Result type `result<T, error>`
+**All** exported functions need to return this exact `result<T, error>` type. (see the [`error` type](bindgen/wit/certirocq-abi.wit))
+For instance, in the following function the `u64` is mapped to Rocq's `UPrim63`, which can fail if the input number doesn't fit.
 ```wit
 package local:demo;
 
@@ -76,53 +51,10 @@ world wrapper-world {
 }
 ```
 
-`option<u64>` is not enough — `plus1` can fail two ways, out of memory and a
-`val` of 2⁶³ or more, and `none` cannot say which. The enum never reaches the
-Rocq side: that signature asks you for `plus1 : int -> int`. There is no opt-out
-— a component that traps instead of answering is not a component anyone can
-use. Details in [`TODO.md#failure-channel`](TODO.md#failure-channel).
-
-## What works
-
-| | Status |
-| --- | --- |
-| `check` — accept or reject a world, with reasons | **supported** |
-| `generate` — `interface.v`, `extraction.v`, `adapter.wat`, `Makefile` | **supported** |
-| `roundtrip` — the conversion harness `checks.roundtrip` runs | **supported** |
-
-What holds `generate` to its word is that
-[`examples/`](examples) was written, built and run *before* the emitter
-existed: `checks.generated` regenerates each example's world and requires the
-result to be the hand-written adapter token for token, then assembles the
-generated one and requires the same answers from `wasmtime`. The first thing
-that check found was a boxed `u64` passed by value instead of by address — a
-component that assembles, runs, and answers nonsense.
-
-Those components link against the examples' stubs, which stand in for
-CertiRocq's output so the check needs no Rocq. `checks.backend` is the other
-half: a generated world per representation compiled with the real CertiRocq,
-merged with its generated adapter, and invoked — including one invocation with
-the heap capped at the module's declared minimum, where the real allocator
-fails and the adapter has to answer `err(out-of-memory)`.
-
-Some examples run *ahead* of the gate. [`variant`](examples/variant) is the
-whole pipeline for a construct `generate` still refuses — hand-written,
-measured against a module the real CertiRocq compiled, and answering
-correctly. It is the target the next support work is written against, and the
-check holds the generator to refusing it until that is done.
-
-[`minus`](examples/minus) and [`record`](examples/record) were both there
-until several parameters and then records landed, and the move is what that
-work was for: the generator now emits their adapters token for token, so the
-same hand-written files that were targets are now the reference.
-
 ## WIT feature support
-
-Anything not marked **supported** is **rejected with a reason and a pointer
-into [`TODO.md`](TODO.md)**, never silently mishandled.
+The following features are currently supported.
 
 ### Types
-
 | Feature | Status | Notes |
 | --- | --- | --- |
 | `bool` | **supported** | tagged immediate, `false`=1, `true`=3 |
@@ -140,11 +72,11 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `f32` | [not planned](TODO.md#f32) | `PrimFloat` is binary64 only; nothing carries an `f32` faithfully |
 | `list<T>`, fixed-length lists | [not supported](TODO.md#lists) | the one recursive former WIT has; shares machinery with strings |
 | `map<K, V>` | [not planned](TODO.md#maps) | needs a key ordering with no canonical Rocq map to follow |
-| `string` | [not supported](TODO.md#strings) | brings `cabi_realloc` and value walking with it |
+| `string` | [not supported](TODO.md#strings) | brings `cabi_realloc`, requires PrimString |
 | `char` | [not planned](TODO.md#char) | no faithful Rocq counterpart |
 | `flags` | [not planned](TODO.md#flags) | a bitfield with no Rocq counterpart |
 | `resource`, `own<T>`, `borrow<T>` | [not planned](TODO.md#resources) | needs handle tables and destructors; there is no GC |
-| `future<T>`, `stream<T>`, `error-context` | [not planned](TODO.md#async) | the backend is synchronous |
+| `future<T>`, `stream<T>`, `error-context` | [wanted, not scheduled](TODO.md#async) | the backend is synchronous; faithful support is blocked on WasmCert |
 
 ### Worlds and signatures
 
@@ -159,24 +91,8 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `export some:pkg/iface` | [not planned](TODO.md#exported-interfaces) | only top-level function exports |
 | Rocq as the source language | **supported** | the default, and the only one implemented |
 | Lean | [not supported](TODO.md#frontends) | selectable (`--frontend lean`) and rejected with a reason; the unaffiliated [Peregrine project](https://peregrine-project.github.io/) has a Lean frontend into λ□ feeding this same backend, so only the interface file and the compile driver would differ |
-| Agda | [not planned](TODO.md#agda) | same route through λ□, but two frontends is the commitment |
-| verified glue | [not supported](TODO.md#verified-glue) | the adapter is trusted, as the C glue is |
-
-## Layout
-
-| Path | |
-| --- | --- |
-| [`bindgen/`](bindgen) | the generator, Rust, on `wit-parser` |
-| [`bindgen/src/support.rs`](bindgen/src/support.rs) | the support gate |
-| [`bindgen/src/repr.rs`](bindgen/src/repr.rs) | CertiRocq's value representation, with sources |
-| [`bindgen/src/emit/plan.rs`](bindgen/src/emit/plan.rs) | everything the output depends on, decided once — the only part that can fail |
-| [`bindgen/src/emit/`](bindgen/src/emit) | the emitters: `rocq.rs`, `adapter.rs`, `build.rs`, each a pure function of the plan |
-| [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
-| [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
-| [`examples/`](examples) | the whole pipeline for one export, hand-written before the emitter existed and so usable as evidence about it: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), [`record`](examples/record), and [`variant`](examples/variant), which is ahead of the gate |
-| [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
-| [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
-| [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
+| Agda | future work | same route through λ□, but two frontends is the commitment |
+| verified glue | [not supported](TODO.md#verified-glue) | the adapter is trusted |
 
 ## Building
 
@@ -198,17 +114,3 @@ so a green checkout is a green branch:
 | `smoke` | assembles each example into a component and checks what `wasmtime` says it answers |
 | `generated` | generates for each example's world and requires the result to be the hand-written files token for token, then assembles the generated adapter and requires the same answers. For an example ahead of the gate, requires instead that the generator refuses it with the right code and writes nothing |
 | `roundtrip` | emits each conversion in both orders and runs it under `wasmtime`, requiring the value back unchanged. An export adapter uses each direction in one position only; the other order is the one [function imports](TODO.md#imports) will need, so it is run before there is anything that needs it |
-
-The last six are Python scripts under [`checks/`](checks) and run standalone
-in `nix develop` as well, which is often what you want while changing
-`repr.rs`. They guard against the same thing: a mismatch there does not break
-the build, it makes the adapter read the wrong bytes and return plausible
-garbage.
-
-One part of it does break the build.
-[`bindgen/src/measured.rs`](bindgen/src/measured.rs) records the constructor
-immediates a compiled module actually contained, and `repr.rs` asserts against
-them at compile time, so the generator does not build while it disagrees with
-the last measurement. `python3 checks/representation.py --update` re-measures,
-which is the step where someone decides the change was intended. See
-[representation conformance](TODO.md#representation).

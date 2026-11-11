@@ -1,12 +1,8 @@
 # Deferred work
 
 What `componentize-formal` deliberately does not do, and what each item would
-cost. Nothing here needs to work for the tool to be useful; the point is that a
-WIT world using any of it is **rejected with a clear message** instead of
-producing an adapter that misreads memory.
-
-The gate lives in [`bindgen/src/support.rs`](bindgen/src/support.rs)
-(`check_world`), and every rejection prints the code and the anchor of its
+cost. The gate lives in [`bindgen/src/support.rs`](bindgen/src/support.rs)
+(`check_world`); every rejection prints a stable code and the anchor of its
 section below:
 
 ```
@@ -18,13 +14,13 @@ error[E-LIST]: list (list<u32>) is not supported
 ```
 
 Fixtures for every code are in [`bindgen/tests/wit`](bindgen/tests/wit) and
-pinned by [`bindgen/tests/support.rs`](bindgen/tests/support.rs). That test also
-asserts each code is mentioned here, so a new code cannot be added without a
-section.
+pinned by [`bindgen/tests/support.rs`](bindgen/tests/support.rs), which also
+asserts each code is mentioned here.
 
 | Code | Construct | Status |
 | --- | --- | --- |
 | `E-ARITY-0`, `E-NO-RESULT` | exports with no parameters, or no result | [planned, phase 2](#arity) |
+| `E-ARITY-FLAT` | parameters flattening past the canonical ABI's direct limit | [planned, phase 2](#arity) |
 | `E-MULTI-EXPORT` | more than one exported function | [planned, phase 2](#multi-export) |
 | `E-OPTION-UNIT` | `result` with a payload in neither case | [rejected outright](#option-result) |
 | `E-STRUCTURED` | `tuple`, `variant` | [planned, phase 3](#structured-types) |
@@ -33,64 +29,64 @@ section.
 | `E-INT-WIDTH` | `u8`, `u16`, `u32` | [wanted, not scheduled](#integer-widths) |
 | `E-SIGNED` | `s8`, `s16`, `s32`, `s64` | [wanted, not scheduled](#signed-integers) |
 | `E-FLOAT` | `f64` | [planned, phase 4](#f64) |
-| `E-FLOAT` | `f32` | [not planned](#f32) |
+| `E-FLOAT` | `f32` | [out of scope](#f32) |
 | `E-LIST` | `list`, fixed-length list | [wanted, not scheduled](#lists) |
-| `E-MAP` | `map` | [not planned](#maps) |
+| `E-MAP` | `map` | [out of scope](#maps) |
 | `E-STRING` | `string` | [wanted, not scheduled](#strings) |
 | `E-CHAR` | `char` | [out of scope](#char) |
 | `E-FLAGS` | `flags` | [out of scope](#flags) |
 | `E-RESOURCE` | `resource`, `own`, `borrow`, methods | [out of scope](#resources) |
-| `E-ASYNC` | `async func`, `future`, `stream`, `error-context` | [out of scope](#async) |
+| `E-ASYNC` | `async func`, `future`, `stream`, `error-context` | [blocked on WasmCert](#async) |
 | `E-IMPORT` | imported functions and interfaces | [wanted, not scheduled](#imports) |
 | `E-NO-CHANNEL`, `E-ERROR-TYPE` | an export that cannot report its failures | [required](#failure-channel) |
 | `E-NO-EXPORT` | a world with nothing to export | [rejected outright](#nothing-to-compile) |
 | `E-UNKNOWN` | a world that did not resolve | [rejected outright](#unresolved) |
 | `E-EXPORT-INTERFACE` | `export some:pkg/iface` | [out of scope](#exported-interfaces) |
+| — | generated glue for the examples, including a `wasi:http` service | [planned](#generated-examples) |
 | — | verified glue | [research project](#verified-glue) |
+
+## Repository layout
+
+| Path | |
+| --- | --- |
+| [`bindgen/`](bindgen) | the generator, Rust, on `wit-parser` |
+| [`bindgen/src/support.rs`](bindgen/src/support.rs) | the support gate |
+| [`bindgen/src/repr.rs`](bindgen/src/repr.rs) | CertiRocq's value representation, with sources |
+| [`bindgen/src/emit/plan.rs`](bindgen/src/emit/plan.rs) | everything the output depends on, decided once — the only part that can fail |
+| [`bindgen/src/emit/`](bindgen/src/emit) | the emitters: `rocq.rs`, `adapter.rs`, `build.rs`, each a pure function of the plan |
+| [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
+| [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
+| [`examples/`](examples) | hand-written references for the pipeline: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), [`record`](examples/record), [`variant`](examples/variant) (ahead of the gate), and the vendored [`wasi-http`](examples/wasi-http) WIT |
+| [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
+| [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
 
 ## <a id="no-silent-failure"></a>No silent failure
 
 A wrong adapter does not announce itself: it reads the wrong bytes and
 `wasmtime` hands back plausible garbage. So the gate is deliberately one-sided.
 
-- Every construct is matched explicitly. Nothing is accepted merely because the
-  walk failed to recognise it — an unresolved type is itself a rejection
-  (`E-UNKNOWN`).
-- Every offending position is reported, not just the first, so one run tells you
-  the whole story.
-- Anything that *narrows* rather than rejects would get a warning naming the
-  position. Nothing warns today, and the warning channel is reporting-only:
-  there was a `--deny-warnings` flag to escalate warnings into failures, and it
-  was removed because nothing could ever feed it. The one narrowing that exists,
-  `u64` carried by a 63-bit integer, is reported as a failure mode through the
-  error channel instead -- the adapter range-checks the argument and answers
-  `err(out-of-range)`, which is strictly louder than a compile-time note. If a
-  narrowing ever turns up that cannot be pushed into the error channel like
-  that, `Report::warnings` is still printed by both commands and escalating it
-  again is a few lines.
-- A construct that cannot be represented is rejected even when it is only
-  declared and never used by an export, because it still shows up in the
-  component's type. A world-level `resource` is the case that matters.
-- Out-of-memory is never swallowed, and neither is anything else: every export
-  must be able to report every way it can fail. See
-  [the failure channel](#failure-channel).
+- Every construct is matched explicitly; an unresolved type is itself a
+  rejection (`E-UNKNOWN`).
+- Every offending position is reported, not just the first.
+- Nothing warns today. The one narrowing, `u64` carried by a 63-bit integer, is
+  reported through the error channel instead: the adapter range-checks and
+  answers `err(out-of-range)`.
+- A construct is rejected even when merely declared and never used, because it
+  still appears in the component's type.
+- Out-of-memory is never swallowed; see [the failure channel](#failure-channel).
 
-### <a id="cofix"></a>One silent failure the gate cannot see: cofixpoints
+### <a id="cofix"></a>Cofixpoints
 
-The gate reads the WIT world, so it polices the interface, not the Rocq
-implementation — and CertiRocq does not support `tCoFix`, [turning it into a
-placeholder rather than rejecting
-it](https://github.com/peregrine-project/peregrine-tool/issues/92). A
-`CoFixpoint` compiles and returns a wrong answer. WIT has no coinductive types,
-so no world can ask for one; the exposure is an implementation using one
-internally, which a `Module Type` will admit. Detection looks cheap: `CertiRocq
-Show IR` already dumps the IR, and the generator will be driving that
-invocation anyway.
+CertiRocq turns `tCoFix` into a placeholder instead of rejecting it, so a
+`CoFixpoint` compiles and can return a wrong answer. WIT has no coinductive
+types, so the exposure is an implementation using one internally. Detection
+looks cheap: `CertiRocq Show IR` already dumps the IR, and the generator will
+drive that invocation anyway.
 
 ## <a id="failure-channel"></a>The failure channel — `E-NO-CHANNEL`, `E-ERROR-TYPE`
 
 Every export must return `result<T, error>` with the `error` enum from the
-[`certirocq:abi`](bindgen/wit/certirocq-abi.wit) package this repo ships:
+[`certirocq:abi`](bindgen/wit/certirocq-abi.wit) package:
 
 ```wit
 world wrapper-world {
@@ -99,584 +95,210 @@ world wrapper-world {
 }
 ```
 
-**Every call can fail**, so a bare return type is an incomplete contract rather
-than a terse one. `main_function` runs the whole program and the adapter
-allocates the area it returns through, which is why the backend checks
-`glob_out_of_mem` after every call it makes (`LambdaANF_to_Wasm.v:373-382`) and
-the adapter has to check it after the one it makes.
-
-`option<T>` is **not** enough, and `plus1` is the example: it can fail two
-ways, and `none` cannot say which.
+A bare return type is an incomplete contract: the adapter allocates through the
+bump allocator and the backend checks `glob_out_of_mem` after every call, so
+every call can fail. `option<T>` is not enough — `plus1` can fail two ways and
+`none` cannot say which.
 
 | Failure | Detected |
 | --- | --- |
 | `out-of-memory` | after the call, from `glob_out_of_mem` |
-| `out-of-range` | *before* the call — a `u64` argument of 2^63 or more has no `Uint63.int` |
+| `out-of-range` | before the call — a `u64` argument of 2⁶³ or more has no `Uint63.int` |
 
-The gate computes the failure modes a signature can produce and names them in
-the rejection, so the shortfall is visible rather than inferred.
-
-The error type is matched **by package, version, interface and type name**, not
-by its cases, so a look-alike enum of your own is rejected (`E-ERROR-TYPE`)
-instead of being populated with cases that happen to line up — see
-[versioning](#abi-package-version).
-
-**There is no opt-out.** A trapping export takes the whole instance down and
-tells its caller nothing it can act on, which is not a contract worth
-generating; and a `--oom=trap` mode would have been a second adapter shape to
-write, test and keep conforming for no gain.
-
-The enum never appears on the Rocq side. `func(x: u64) -> result<u64, error>`
-asks you for `plus1 : int -> int` — a Rocq function cannot run out of memory in
-its own type, and nothing in Rocq knows a value has to fit a WIT width.
+There is no opt-out: a trapping export takes the instance down and tells its
+caller nothing it can act on. The error type is matched by package, version,
+interface and type name, so a look-alike enum is rejected (`E-ERROR-TYPE`); see
+[versioning](#abi-package-version). The enum never appears on the Rocq side.
 
 ### <a id="abi-package-version"></a>The shipped package is versioned
 
-`package certirocq:abi@0.1.0`, and a world has to spell the version:
-`use certirocq:abi/errors@0.1.0.{error}`.
-
-The version is part of the type's identity, not decoration. An `enum`'s case
-order *is* its discriminant in the canonical ABI, so appending a case to `error`
-changes what the adapter's `i32` means, and a world written against a different
-case list would line up silently. So the gate matches package, **version**,
-interface and type name — and the shipped version is read off
-[`certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) rather than restated in
-Rust, so the two cannot drift.
-
-Only one version is ever in play: the generator pushes its own copy into the
-resolve, so a world asking for another fails to resolve, and the error names the
-version that is shipped.
-
-When the enum does change: adding a case breaks anyone reading the old one, so
-while this is `0.x` it takes the minor (semver's breaking slot below 1.0), and
-the major afterwards. The version exists to announce the change, not to promise
-compatibility across it.
-
-### <a id="refinement-types"></a>Idea: refinement types for the narrow widths
-
-Worth exploring, not scheduled. The reason `u8`/`u16`/`u32` are
-[rejected](#integer-widths) is that lifting needs a range check, because nothing
-stops the Rocq side returning a larger `int`. A dependent type moves that
-obligation to compile time:
-
-```coq
-Definition u32 := { x : int | (x <? 2 ^ 32)%uint63 = true }.
-Parameter narrow : int -> u32.   (* generated into interface.v *)
-```
-
-Then there is no `out-of-range` on the result side at all — it is ruled out
-statically, and the implementer discharges it once instead of the adapter
-checking it on every call.
-
-What makes it work at the Wasm level is that the proof is erased: `exist x pf`
-becomes a boxed constructor whose proof slot is a box, so the **adapter can
-fabricate it** after doing its own check on the way *in*. Nothing has to
-construct a proof at runtime.
-
-Three things to settle before taking it seriously:
-
-1. **The erased arity.** `sig` has two fields and the second is a `Prop`, so
-   the adapter has to know whether the erased constructor is `[ord, x, box]` or
-   whether a pass strips the `Prop` field to `[ord, x]`. This is the
-   "erased arity is not the Rocq arity" problem in its sharpest form, and it
-   must be checked against `CertiRocq Show IR` rather than assumed — a good
-   first case for the [representation suite](#representation).
-2. **The trust boundary moves.** On the way in, the adapter asserts the
-   refinement by writing a box where the proof goes. A bug in its range check
-   then hands Rocq a value violating Rocq's own invariant. That is not worse in
-   kind than the rest of the trusted glue, but it is worth naming.
-3. **Ergonomics.** Every implementation owes a proof per result. Fine for
-   `fun n => n mod 2 ^ 32`; a real burden in general. It would want to be
-   opt-in — `abi.narrow = "checked" | "refined"` — rather than the default.
-
----
+`package certirocq:abi@0.1.0`, and a world must spell the version:
+`use certirocq:abi/errors@0.1.0.{error}`. An enum's case order *is* its
+discriminant, so appending a case changes what the adapter's `i32` means. The
+shipped version is read off
+[`certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit), not restated in Rust.
+While this is `0.x`, a breaking change takes the minor version; afterwards the
+major.
 
 ## <a id="representation"></a>Representation conformance
 
-The adapter bakes CertiRocq's value representation into loads, stores and
-offsets, and nothing checks that on either side. Three layers.
+The adapter bakes CertiRocq's representation into loads, stores and offsets, so
+the checks pin it in layers:
 
-**1a — the formulas.** Every constant lives in
-[`repr.rs`](bindgen/src/repr.rs) with its source, and its unit tests pin the
-formulas against each other. Catches a mistake in `repr.rs`, not the backend
-moving underneath it --- which is the whole reason for the layers below.
+- [`repr.rs`](bindgen/src/repr.rs) holds every constant with its source, and
+  `measured.rs` records what a compiled module actually contained; `const`
+  assertions stop the generator compiling if the two disagree.
+  `checks/representation.py --update` rewrites `measured.rs` after a deliberate
+  backend change.
+- `checks.representation` compiles fixtures with the real CertiRocq and reads
+  back the module shape, exports, memory/table, constructor encodings and
+  one-case-enum erasure.
+- `checks.smoke` assembles each example into a component and checks what
+  `wasmtime` answers.
+- `checks.generated` generates for each example's world and requires the
+  hand-written glue token for token, then runs the generated component.
+- `checks.roundtrip` composes each conversion in both orders under `wasmtime`,
+  exercising the direction function imports will need.
+- `checks.backend` compiles a world per representation with the real CertiRocq,
+  merges it with its generated adapter and invokes it — the only check where
+  both halves of the merge are real. The pairings are chosen so that a wrong
+  conversion cannot hide behind itself: `is-green` asks which case it is
+  rather than cycling red → green → blue, because a cycle survives both
+  conversions being shifted by the same wrong amount; `sub` is not commutative,
+  so arguments applied in the wrong order are an answer the check can see.
+  Which positions have to be covered is derived from `plan.rs`'s `Repr`, not
+  written out, so a fourth representation fails here until a case exists for
+  it as a parameter and as a result.
 
-**1a′ — what was measured.**
-[`bindgen/src/measured.rs`](bindgen/src/measured.rs) records the immediates a
-compiled module actually contained, and `repr.rs` holds itself to them with
-`const` assertions. So a representation change that reaches that file stops
-the generator compiling rather than changing what it emits:
-
-```text
-error[E0080]: evaluation panicked: assertion failed: BOOL_TRUE == crate::measured::BOOL_TRUE
-```
-
-The file is generated --- `checks/representation.py --update` rewrites it from
-whatever backend is on `PATH` --- so it is a record of a measurement, not a
-second opinion. Deciding that a change is intended is the point at which
-someone has to run that command.
-
-**1b — the module's shape.** `checks.representation` does this now:
-[`checks/representation.py`](checks/representation.py) compiles
-[`exports.v`](checks/rocq/exports.v) with the real CertiRocq and reads back
-everything visible without running the module — the five export names present,
-the table present (the adapter links through it), no imports (the premise of both
-`E-IMPORT` and the instantiation proof), one memory (so `wasm-merge` needs no
-`--enable-multimemory`), and type index *n* taking *n* `i32`s. Names come out
-of `repr.rs` itself, so a rename there cannot leave it testing the old one.
-
-It also reads back the **constructor encoding**, which was filed under layer 2
-on the assumption that it needed the module to run. It does not: a function
-that ignores its argument and returns a nullary constructor compiles to that
-constructor's immediate and nothing else, so
-[`constructors.v`](checks/rocq/constructors.v) compiles five of them and the
-check reads the constant out of each wrapper. That pins `bool`'s swapped pair
-and, as a control, a three-case inductive that is *not* swapped.
-
-Constant functions, not `negb`: an involution hides a swapped encoding
-completely, because lifting and lowering with the same wrong mapping cancels
-out and every answer still looks right.
-
-Finding that wrapper is the part that moved with the CertiRocq below. The
-module now exports *every* function the pipeline generated, each under a
-mangled name --- `_0__reccall_wrapper_193`, `_1__f_case_known_194` --- where
-the release exported the definition's wrapper and nothing else, so the export
-list no longer says which function belongs to the definition. The check reads
-the code pointer out of the closure `main_function` leaves in `result` and
-follows that, which is the path the adapter takes at run time; the `elem`
-section maps function index to table index one to one, so the one constant
-serves as both. The immediates that came back were identical to what
-`measured.rs` already recorded, `bool`'s swap included --- the export shape
-moved, the encoding did not.
-
-A constructor that *takes arguments* carries an ordinal rather than an
-immediate, and compiles to a body full of the allocator's own constants with
-nothing marking which one it is. Those are read by diffing instead: two
-functions differing in nothing but the constructor they build must compile to
-bodies differing in exactly one constant. `mixed := m_first | m_boxed_a _ |
-m_boxed_b _ | m_last` is the type that matters, because its two boxed
-constructors are ordinals 0 and 1 --- the same numbers its two nullary ones
-have --- so an adapter going by the WIT discriminant names a different
-constructor while type-checking perfectly. That is what
-[`examples/variant`](examples/variant) is built on, and the measurement is
-what holds `repr::ordinal::assign` to the backend rather than to itself.
-
-**1c — the components answer.** `checks.smoke`
-([`checks/smoke.py`](checks/smoke.py)) assembles each example under
-[`examples/`](examples) into a component and compares what `wasmtime` prints
-against expectations written out in full. It links against the examples'
-`stub/`, so it needs no Rocq and runs on every push; what holds the stub to
-the real backend is 1b above, and layer 2 below.
-
-**1d — the generator emits that.** `checks.generated`
-([`checks/generated.py`](checks/generated.py)) generates for each example's
-world and requires the result to be the hand-written adapter *token for token*,
-comments and line breaks excepted, then assembles the generated adapter against
-the same `stub/` and requires the same answers. The examples are never
-regenerated: they were written, built and run before the emitter existed, which
-is the only reason they are evidence about it. It also generates for every world
-in [`bindgen/tests/wit/good`](bindgen/tests/wit/good) and parses the result,
-since those fixtures are the rest of the shapes the gate accepts, and runs
-`make -n` over the generated build rules.
-
-The first thing this check found was the emitter passing a boxed `u64` argument
-by value instead of by address --- a component that assembles, runs, and
-answers nonsense.
-
-What it does not cover is the `enum` branch of the emitter, because no example
-under `examples/` has an `enum` parameter: the two that exist take a `u64` and
-a `bool`, so `checks.generated` only parses the adapter it generates for the
-`enum` fixtures. Layer 2 below now assembles `enum` components and reads
-answers out of them, which is the risk; what is still missing here is the
-*reference* — a hand-written `enum` example, written before the emitter and
-held to token for token. A third example closes that.
-
-**1e — the conversions are inverses.** `checks.roundtrip`
-([`checks/roundtrip.py`](checks/roundtrip.py)) takes the pair of conversions
-each representation has — canonical ABI to CertiRocq's value and back, both
-out of [`bindgen/src/emit/convert.rs`](bindgen/src/emit/convert.rs) — composes
-them in both orders in a module of its own, and runs every order on every
-value under `wasmtime`, requiring the value back unchanged.
-
-This is narrower than 1c and 1d and catches something neither can. An export
-adapter uses each direction in exactly one position, so a component's answers
-say nothing about the other order — the one a function import will need
-([#imports](#imports)), where the wrapper takes Rocq arguments out and brings
-a host result back in. And because the harness links against nothing, it runs
-the `enum` branch the paragraph above says no example reaches: `enum.wit`'s
-three cases go through `2*ord+1` and back for real, with the Rocq-side values
-recomputed in the check rather than read from the generator. What it still
-does not do is assemble an `enum` component and read an answer out of it, so a
-third example is still what closes 1d.
-
-**2 — the backend's behaviour.** The rest needs the module to *run*, and now
-does. `checks.backend` ([`checks/backend.py`](checks/backend.py)) generates a
-world per case, compiles it with the real CertiRocq, merges it with its own
-generated adapter and invokes the component, asserting the value that comes
-back — `rocq c`, `wasm-merge`, `component embed`, `component new`, `wasmtime
-run --invoke`, driven through the generated `Makefile` rather than around it.
-
-This is the one step no other check takes. A stub under `examples/*/stub` is
-written against the same `repr.rs` the adapter is, so it agrees with the
-adapter by construction, and 1c and 1d can only catch an adapter that
-disagrees with itself. Here the other half of the merge is whatever CertiRocq
-emitted.
-
-| Case | Pins | |
-| --- | --- | --- |
-| `succ` at `u64`, with 0, 2⁶³−1, 2⁶³ and 2⁶⁴−1 | the boxed primitive int in both positions, the modular wrap, and the range guard at both ends of the half a `u64` has and `Uint63.int` has not | runs |
-| `to-int`, `is-zero` | the tagged immediate, each direction paired with a result of another representation | runs |
-| `is-green`, `colour-of` | nullary ordinals being the declaration index — first case, a middle one, the last | runs |
-| `sub` on two `u64` | one application per argument, in declaration order ([#arity](#arity)) | runs |
-| any of them with the heap capped at the module's declared minimum | the out-of-memory channel firing on the real allocator, not on a poisoned bump pointer | runs |
-| `unwrap-or`, `halve` | `option`'s two kinds of case in one type — the immediate `None` and the boxed `Some` — one position each | runs |
-| `flip` on a `result<u64, bool>` | `inl` and `inr`, the ordinals a swap upstream would exchange, mapped both ways in one call | runs |
-| `dig` on an `option<option<u64>>` | a sum inside a sum: the inner constructor built where the outer one's field is written, the payload lifted through two blocks | runs |
-| `shade` on an `option<colour>` | a sum whose payload is an *immediate*: the one shape where a boxed constructor's field is `2*ord+1` rather than a pointer, permuted so no case answers as another | runs |
-| `is-empty`, `whole` on a two-field `record` | the one-constructor box `[ord, f₀, f₁]`, its cells holding pointers, in each position | runs |
-| `bump` on a `record` whose field is a `record` | a block built where another block's cell is written, each field reached through its own compiled projection | runs |
-| a `tuple` in each position | the same box, reached without a name to declare it under | with [structured types](#structured-types) |
-| one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged | with the reset |
-| two and three exports | `MkExports` field offsets | with [several exports](#multi-export) |
-| `f64` round-trip | the boxed float | with `wasm-prim-floats` (phase 4) |
-
-The pairings are chosen so that a wrong conversion cannot hide behind itself.
-`is-green` returns a `bool` rather than cycling red → green → blue, because a
-cycle survives both conversions being shifted by the same wrong amount — a
-rotation commutes with a rotation — while asking which case it is does not;
-`sub` is not commutative, so applying the arguments in the wrong order is an
-answer the check can see. Which positions have to be covered is derived from
-`plan.rs`'s `Repr`, not written out, so a fourth representation fails here
-until a case exists for it as a parameter and as a result.
-
-The out-of-memory row needs no allocating Rocq program, which would have to
-ask for the better part of two gigabytes: the component is invoked again with
-the host granting exactly the pages the module declares as its minimum, so the
-first `memory.grow` the allocator asks for fails, the backend sets
-`out_of_mem`, and the adapter has to answer `err(out-of-memory)` rather than
-trap or return whatever `result` holds.
-
-What it costs is a CertiRocq on the per-push path, which
-`checks.representation` already put there and the cache this project owns is
-what pays for: see [the per-push path](#per-push). The six cases take seconds
-once CertiRocq is substituted — they are four-line definitions.
-
-For the canonical-ABI half, the equivalent check is differential: diff generated
-layouts against `cargo component`'s for the matching Rust signature — see
-[structured types](#structured-types).
-
-**Expected lifespan.** All of this describes a linear-memory representation with
-a bump allocator that never reclaims. WasmGC is the way out, and hosts have it
-now ([Endive](https://github.com/bytecodealliance/endive) 1.0 ships it with
-native JVM GC integration), but retargeting the backend to WasmGC structs would
-invalidate every constant in `repr.rs` and the adapter built on them — and the
-canonical ABI is linear-memory based anyway, so components and WasmGC do not yet
-compose. Not a near-term option, but the reason `repr.rs` is one file.
+The remaining gap is a hand-written `enum` example: `checks.generated` only
+parses the `enum` adapter it emits, while `checks.backend` covers it at run
+time. A third example would close that.
 
 ### <a id="table-export"></a>The backend exports the table
 
-The adapter reaches the compiled closures through the backend's own function
-table, so the module has to export it. The name is plain `table`, matching the
-rest of the backend's exports (`memory`, `result`, `mem_ptr`) rather than
-LLVM's `__indirect_function_table`: a `MED_table 0%N` entry next to the
-`MED_mem 0%N` one in `LambdaANF_to_Wasm.v`. Before it existed the build
-`sed`-ed the export in between `rocq c` and `wasm-merge` --- the one step that
-rewrote the backend's output instead of wrapping it. Now the generated build
-rules link the backend's own bytes.
+The adapter reaches the compiled closures through the backend's function table,
+exported as `table`. Released CertiRocq does not export it, so `flake.nix` pins
+`womeier/certirocq` at `wasm-export-table` head `546dd8a8`: upstream `main`
+plus the `MED_table` entry and its `ET_table` obligation. `rocq c` re-checks
+that obligation on every build, and `checks/representation.py` fails if the
+table is absent.
 
-**Which CertiRocq.** `womeier/certirocq` at `wasm-export-table`, pinned to its
-head `546dd8a8`: upstream `main` plus eleven lines, adding the entry and
-discharging the `ET_table` obligation the instantiation proof then carries,
-nothing admitted. `rocq c` re-checks that obligation on every build, so a
-rebase that invalidates the proof fails the build instead of quietly losing
-it. No released CertiRocq exports the table and neither does `main`. Pinned by
-revision rather than by branch name, here and for MetaRocq below, because a
-branch pin follows the next rebase on its own --- a tree that compiled
-yesterday stops compiling with nothing in `flake.nix` having changed.
+<a id="pinning"></a>The fork is pinned by revision, not branch name, so a rebase
+cannot silently change the tree. `main` needs local builds of WasmCert-Coq
+2.2.1 and MetaRocq's `9.1` branch; `flake.nix` carries both, with the two
+nixpkgs phases `main` moved.
 
-**What that costs.** `main` wants two dependencies newer than the nixpkgs pin
-has, so both become local builds:
-
-- **WasmCert-Coq 2.2.1**, because `LambdaANF_to_Wasm_utils.v:1173` uses
-  `write_bytes_gen_preserve_length`, which 2.2.1 adds and 2.2.0 does not have
-  anywhere. Cheap: it needs nothing newer than the pin already provides.
-- **MetaRocq at the head of its `9.1` branch** (`51b14e4b`), because
-  `Compiler/metarocq_pipeline.v` imports
-  `MetaRocq.Erasure.EImplementLazyForce`, which exists in no release ---
-  the pinned 1.5.1-9.1 set has `EImplementBox` and nothing else. Expensive:
-  hours from source, and in no cache this flake can reach, including
-  `metarocq.cachix.org`, whose store names come from coq-nix-toolbox's
-  overlays rather than this nixpkgs revision's expression.
-
-The nixpkgs expression also describes `0.9.1+9.1`, so two of its phases are
-wrong for `main` and both would fail only after all of `theories` had
-compiled: the manifests are generated by `plugins/manifests/generate.py`,
-which needs a `python3` it does not bring, and the plugins moved to
-`plugins/plugin` and `plugins/cplugin`, which its `installPhase` does not
-know. `flake.nix` corrects those two, following CertiRocq's own
-`.nix/coq-overlays/CertiRocq/default.nix`.
-
-The consequence for `checks/cache_hits.py` is that it can no longer speak
-for MetaRocq, the build it existed to protect. It checks what is left ---
-CompCert, and the inputs MetaRocq is built from --- and says in its docstring
-what it gave up.
-
-**It compiles and runs.** All nine checks pass on the pin, including the two
-that read `enum Repr` and so had to be told about `Repr::Record` before
-records could land --- and every example answers
-correctly through `make run`: CertiRocq's own module linked to the adapter,
-which could not be assembled at all before the export existed. Two things
-moved with the pin --- the plugin's flags are double-dashed now, `-file`
-replaced by `--output`, and the module's export shape changed, which
-[1b](#representation) covers.
-
-Which CertiRocq a user compiles with is still an assumption the generator
-cannot check at run time, so it is checked where assumptions about the backend
-belong: `checks/representation.py` fails if the table is not exported, naming
-the input as the thing to move, and the generated build rules guard the link
-step the same way.
-
-#### <a id="per-push"></a>The per-push path, bought with a cache of our own
-
-The first way out was taken. `womeier.cachix.org` is this project's own
-Cachix, declared in `flake.nix`'s `nixConfig` beside the three upstream ones,
-and `.github/workflows/ci.yml` both reads and writes it through
-`cachix/cachix-action`. CertiRocq, MetaRocq and WasmCert-Coq are substituted
-from it like anything else, so a per-push run is minutes again --- and so is
-the first `nix develop` of anyone who accepts the flake's `nixConfig` and can
-have it honoured, which the old arrangement never covered at all: it only ever
-made CI cheap.
-
-What did not survive is the assertion. `nix build --max-jobs 0 .#certirocq`
-existed to turn a collected cache into a failure in seconds instead of a
-MetaRocq build on a runner, and with the three moved packages uncached
-upstream it failed by construction. It is gone from `ci.yml`, which now runs
-`nix flake check` twice --- once as eval over every system, once for real ---
-and nothing else. So the per-push gate no longer asserts anything about
-caches. A cold project cache shows up as a long run bounded by
-`timeout-minutes: 330`, not as a fast failure. That trade is deliberate: fast
-failure was only ever available while upstream held everything, and the table
-export is what stopped it holding.
-
-The checking moved to `.github/workflows/pin.yml`, which is where it belongs
---- it is a claim about the pin, not about a push. Mondays at 04:17 UTC, on a
-push touching `flake.nix`, `flake.lock` or the workflow, and on demand, it
-runs `checks/cache_hits.py` against the *upstream* substituters only, named in
-the script and passed with `--no-accept-flake-config` so that our own copy
-cannot answer for the pin and hide an upstream GC behind it. Then `nix build
-.#certirocq`, whose closure the cachix step pushes: nothing keeps a Cachix
-path alive but being pushed, so that step is both the refill and the check
-that what CI depends on is still there.
-
-What it costs is a cache, a token (`secrets.CACHIX_AUTH_TOKEN`), and that job
-to keep it warm. A fork PR has no token; `cachix-action` then substitutes
-without pushing, which is the behaviour we want, since making the missing
-secret fatal would fail every fork PR.
-
-The other two ways out are unchanged, and both are still better than paying
-for this one:
-
-- **Split the gate.** Only `representation` needs Rocq; the other six are the
-  `bindgen` shell and could stay per-push on their own. Cheap, and it gives up
-  the one check that holds `repr.rs` to the real backend --- unnecessary while
-  the cache holds, and the thing to reach for if it stops.
-- **Get the export upstream.** Merged and released, CertiRocq is a nixpkgs
-  cache hit again, which retires this cache, all three source builds, and the
-  ground `cache_hits.py` gave up, in one move. Slowest, and the only one that
-  removes the problem instead of paying for it.
+<a id="per-push"></a>The per-push path substitutes CertiRocq, MetaRocq and
+WasmCert-Coq from `womeier.cachix.org`; `.github/workflows/pin.yml` checks the
+upstream cache weekly and on changes to the pin. See `flake.nix` and the
+workflows for the arrangement.
 
 ### <a id="extract-inductives"></a>A remapping the generator cannot see
 
-The constructor immediates the adapter contains come from declaration order,
-and `bool`'s come from the one documented exception to it. Both are
-*configurable*. `CertiRocq.Plugin.Loader` --- the three-line file that
-`From CertiRocq.Plugin Require Import CertiRocq` loads --- sets the exception
-up with
+Constructor immediates come from declaration order (with `bool` the documented
+exception), and `CertiRocq Extract Inductives` lets a user's own Rocq file
+permute them. The generator does not read that file, so an adapter built from
+declaration order would return the wrong case while type-checking and running
+cleanly. The real fix is to read the emitted module's constructor constants back
+in the build rules — the measurement `checks/representation.py` already makes —
+and compare them with what the adapter assumes. Worth doing when the first
+generated adapter for a world with its own inductive is built for real.
 
-```coq
-CertiRocq Extract Inductives [ bool => "bool" [ 1 0 ] ].
-```
+### <a id="enum-unit"></a>An erased constructor: the one-case `enum`
 
-and that command is available to anyone. A world's `enum colour` compiled in a
-file that also says `CertiRocq Extract Inductives [ colour => "colour" [ 2 1 0 ] ]`
-would permute the ordinals under an adapter built from declaration order, and
-every call would return the wrong case while type-checking and running cleanly.
-
-Nothing on the WIT side can detect this: the remapping lives in the Rocq file
-the user writes, which the generator does not read. Three options, none taken
-yet:
-
-- **Say so.** The generated `interface.v` could carry the warning, which costs
-  nothing and relies on someone reading it.
-- **Check the output.** The immediates are visible in the compiled module, so
-  the build rules could read the constructor constants back and compare them
-  against what the adapter assumes --- the same measurement
-  [`checks/representation.py`](checks/representation.py) already makes, applied
-  to the user's own types rather than to fixtures. This is the real answer.
-- **Own the file.** `extraction.v` is generated, so it could be the only place
-  the command may appear and the generator could refuse any other use of it.
-  That means parsing Rocq, which is a bad trade.
-
-The middle one is worth doing when the first generated adapter for a world with
-its own inductive gets built for real.
-
----
+A one-case `enum` distinguishes nothing, so the backend erases it: the value is
+an allocated closure block, not the immediate `1`, and both its projection and
+its `match` disappear. The adapter therefore lifts the constant discriminant 0
+without reading the value and lowers `2*ord+1` without anything reading it.
+`checks.representation` pins the erasure, and `checks.backend` runs a bare
+one-case enum, one beside a live field, and a record whose fields are all
+erased. If the backend ever stops erasing, the adapter need not change; the
+section is the thing to revisit.
 
 ## <a id="heap-reset"></a>Resetting the heap between calls
 
-The allocator only bumps `glob_mem_ptr`; nothing frees. So every call leaks
-everything it allocated, and a component is good for a bounded number of calls
-before `out-of-memory` is all it returns. For `plus1` that bound is large; for
-[lists](#lists) and [strings](#strings) it is small.
+The allocator only bumps `glob_mem_ptr`; nothing frees. Every call leaks what it
+allocated, so a component is good for a bounded number of calls before
+`out-of-memory`.
 
-**The adapter should snapshot `glob_mem_ptr` once, immediately after
-`main_function` returns, and restore it before every call.** What
-`main_function` built — the export closures and their environments — sits below
-the snapshot; what a call allocates sits above it and is dead once the result
-has been lowered into the canonical ABI. Peak memory becomes the snapshot plus
-the largest single call, rather than the sum of all calls.
+The adapter should snapshot `glob_mem_ptr` after `main_function` returns and
+restore it before the next call (or in `post-return`, never between producing a
+result and handing it over). The region below the snapshot is write-once, so
+this is sound while calls cannot re-enter. That changes with
+[imports](#imports), where a wrapper allocates mid-program and the timing has to
+be re-derived. A reset would also let a failed call recover by clearing
+`glob_out_of_mem`, turning `out-of-memory` into a per-call failure. Deferring
+costs capacity, not correctness: the limit still arrives through the
+[failure channel](#failure-channel).
 
-Why that should be sound: the region below the snapshot is **write-once**. The
-generated code only ever writes cells it has just allocated, so if
-`main_function` returns at `mem_ptr = S`, every later store is at ≥ S and
-`[0, S)` is frozen. Re-entrancy would break it, and today it cannot happen ---
-no [imports](#imports) means nothing can call back in mid-call. Both are claims
-to pin in layer 2 of [representation conformance](#representation), not to
-assume.
+## <a id="generated-examples"></a>Examples with generated glue
 
-**The re-entrancy half expires when imports land.** Once the compiled module
-can call out through an adapter wrapper, the host can be on the stack while a
-call is still in flight, and that wrapper allocates in order to lower its
-arguments. Write-once survives --- those allocations are above `S` like any
-other --- but the timing question below does not: a reset on entry to a call is
-wrong while an outer call is live. Whatever answer that question gets has to be
-re-derived for a re-entrant stack, not inherited.
+`generate` reproduces [`plus1`](examples/plus1), [`negb`](examples/negb),
+[`minus`](examples/minus) and [`record`](examples/record) token for token, but
+the committed files remain the hand-written references and `checks.generated`
+compares against them. That is deliberate: the references are the independent
+oracle. Adapting the examples means adding one whose glue the tool writes — the
+target is a `wasi:http` 0.2.x proxy service:
 
-Three things to settle:
+```wit
+world proxy {
+  include imports;
+  export incoming-handler;
+}
+```
 
-- **Where the snapshot lives.** An adapter global, written by whatever calls
-  `main_function` — which must happen exactly once, so either a `start`
-  function or an initialised flag. Undecided.
-- **When the reset fires.** Lowered lists and strings live in our memory and the
-  caller reads them after the call returns, so the reset belongs on entry to the
-  *next* call, or in `post-return` — never between producing a result and
-  handing it over. `post-return` is a [legal no-op](#lists) today because
-  nothing is freed; a reset gives it a job.
-- **Recovering from out-of-memory.** A failed call leaves garbage above the
-  snapshot and `glob_out_of_mem` set. Resetting and clearing the flag would
-  make `out-of-memory` a per-call failure instead of a poisoned instance —
-  worth having, and it rests on the same frozen-region claim.
+[`examples/wasi-http`](examples/wasi-http) holds the vendored 0.2.8 WIT;
+`generate` refuses it today. What has to land first:
 
-**Deliberately not in the first generated adapter.** Deferring it costs calls,
-not correctness: without the reset a component answers fewer times before
-`out-of-memory`, and that limit arrives through the
-[failure channel](#failure-channel) like any other failure — a caller is told,
-never handed a wrong answer. So it is a capacity improvement resting on a
-frozen-region claim that layer 2 has to pin anyway, and it can land after the
-first component runs end to end rather than blocking it.
+| Feature | Where `wasi:http` needs it | |
+| --- | --- | --- |
+| resources | most of `types`, `io`, streams, pollables — handle tables and destructors | [#resources](#resources) |
+| imports | `types`, `outgoing-handler`, `io`, `clocks`, `random`, `cli`; `mod_imports := []` is baked into the proof | [#imports](#imports) |
+| `string` | field names, `path-with-query`, `authority`, `error-code` payloads | [#strings](#strings) |
+| `list<T>` | `field-value`, `fields`, stream I/O; brings `cabi_realloc` and `post-return` | [#lists](#lists) |
+| `tuple` | the `(field-name, field-value)` entry | [#structured-types](#structured-types) |
+| `variant` | `method`, `scheme`, `error-code`, `header-error`, `stream-error` | [#structured-types](#structured-types) |
+| `u8`, `u16`, `u32` | status codes, alert ids, sizes, poll indices, clock nanoseconds | [#integer-widths](#integer-widths) |
+| bare `result` | eight setters return `result` with no payload | [#option-result](#option-result) |
+| exported interface | `export wasi:http/incoming-handler`, not a top-level function | [#exported-interfaces](#exported-interfaces) |
+| no-result export | `handle` returns nothing, so there is nowhere for out-of-memory | [#arity](#arity) |
+| heap reset | every request lowers strings and lists, so calls leak | [#heap-reset](#heap-reset) |
 
----
+This is two scope reversals (resources, exported interfaces), the proof work
+behind imports, three types, a width, and two decisions (payload-less `result`,
+and a void export's failure channel). Imports are the expensive part: the proof
+`instantiation.v` assumes `mod_imports := []`, and a `wasi:http` handler must
+call out to answer anything. Async is not needed for 0.2.x; 0.3.x waits on
+WasmCert ([#async](#async)).
 
 ## Planned
 
-Integers are carried by **Rocq's primitive 63-bit unsigned ints**
-(`Uint63.int`), and `u64` is the only supported width. Values ≥ 2⁶³ have no
-representation there, so the generator warns at the position where the
-narrowing happens and the adapter guards rather than truncating.
+Integers are carried by Rocq's primitive 63-bit unsigned ints (`Uint63.int`), so
+`u64` beyond 2⁶³−1 is a reported failure rather than a silent truncation.
 
 ### <a id="arity"></a>Export shape — `E-ARITY-0`, `E-ARITY-FLAT`, `E-NO-RESULT`, phase 2
 
-**Several parameters are supported now.** `E-ARITY-N` is gone, and `func(a: T,
-b: U, ...) -> result<V, error>` goes through. What settled it was a
-measurement, not an argument: the open question had been whether uncurrying
-changes the arity of the closure reachable from `main`'s result, and it does
-not. A compiled `int -> int -> int` has four functions and a table of four,
-and every one of them has the `(env, arg)` closure type, so there is no 2-ary
-core function to call. Iterated application is the only shape there is.
+Several parameters are supported: the backend curries, so the adapter applies
+one argument at a time, a box and a `call_indirect` each, reading the next
+closure out of `glob_result` in between. Argument boxes are reserved up front
+and never reused, and the out-of-memory check runs after every application.
+[`examples/minus`](examples/minus) is the reference.
 
-So the adapter applies one argument at a time — a box and a `call_indirect`
-each, with the next closure read out of `glob_result` in between, which is
-what the C glue's `make_call` (`theories/Glue/glue.v:1229`) does.
-[`examples/minus`](examples/minus) is the reference: hand-written, measured,
-answering correctly through `make run` against the real backend and not only
-the stub, and now emitted token for token by the generator. Its README has the
-numbers.
+What is left are the two shapes with nothing to apply or nothing to return:
 
-Two things the measurement added to the plan that was written here before it.
-The argument boxes have to be reserved up front and never reused: the first
-application captures the adapter's box *by address*, and a later application
-reads through that pointer, so an adapter that allocated one box per argument
-in turn would compute `b - b`. And the out-of-memory check belongs after
-*every* application, not just the last — a failure in the middle leaves the
-*previous* closure in `glob_result`, and applying the next argument to it is a
-`call_indirect` into a body expecting a different shape. That is a wrong
-answer today and a trap once [structured types](#structured-types) land, where
-a body loads an ordinal and runs `unreachable` on anything else. The flag
-being sticky is what makes this a safety check rather than a reporting one.
+- **No parameters** (`E-ARITY-0`): a nullary export is a value, not a closure,
+  so the adapter skips `call_indirect`.
+- **No result** (`E-NO-RESULT`): nothing to lift and nowhere to put the
+  out-of-memory signal.
 
-**What is left** is the two shapes with nothing to apply or nothing to return,
-each needing its own adapter prologue:
+**`E-ARITY-FLAT`.** Above `MAX_FLAT_PARAMS` = 16 flat values the canonical ABI
+passes a pointer to a tuple instead of one core parameter per WIT parameter.
+The limit counts flat values, not parameters: nine `option<u64>` parameters hit
+it, and so does a single record of nine `u64` fields. Raised in the planner
+rather than the gate because it needs the layout of all parameters together.
 
-- **No parameters.** A nullary export is a value, not a closure, so
-  `main_function` leaves the result itself in `glob_result` and the adapter
-  skips `call_indirect` entirely.
-- **No result.** Nothing to lift, and nowhere to put the out-of-memory signal.
-
-**The arity is bounded, but not by the arity.** `E-ARITY-FLAT`: above
-`MAX_FLAT_PARAMS` = 16 flat values the canonical ABI stops passing one core
-parameter per WIT parameter and passes a pointer to a tuple in memory instead,
-which is a prologue the adapter does not have. What counts is flat values, not
-parameters, and that stopped being the same number when
-[sums](#option-result) landed: a sum flattens to a discriminant plus the join
-of its cases, so nine `option<u64>` parameters hit the limit that seventeen
-`u64` ones do. A [record](#structured-types) concatenates its fields'
-flattenings, so with those a *single* parameter can reach it alone. The
-refusal says how many flat values the parameters actually take, because nine
-being "more than 16" is otherwise unreadable. Raised in the
-planner rather than the gate -- it is the one refusal that needs the layout,
-since the gate walks types and this is a property of all of them together.
-
-Nine `u64` parameters do go through: nine applications, nine blocks at an
-8-byte stride above the return area, `mem_ptr` advanced by 88, and an
-out-of-memory check after each. Only *n* = 2 has been run end to end, though.
-The emitter is written for any *n* up to the flat limit, and the generated
-adapter for three parameters parses, but three has not been through a real
-backend.
+Only *n* = 2 has been run end to end. The emitter is written for any *n* up to
+the flat limit and the three-parameter adapter parses, but three has not been
+through a real backend.
 
 ### <a id="multi-export"></a>Several exports — `E-MULTI-EXPORT`, phase 2
 
-`CertiRocq Compile Wasm` compiles one closed term, and `main_function` leaves
-one value in `glob_result`. For a world with *n* exports the generated
-`extraction.v` will compile a single *n*-ary constructor holding every export
-closure:
+`CertiRocq Compile Wasm` compiles one closed term. For *n* exports the generated
+`extraction.v` will compile one *n*-ary constructor holding every closure:
 
 ```coq
 Inductive Exports := MkExports (plus1 : int -> int) (negb : bool -> bool).
 Definition __exports := MkExports Impl.plus1 Impl.negb.
 ```
 
-A single-constructor inductive of arity *n* is boxed as `[ord, f₀, …, fₙ₋₁]`
-(`LambdaANF_to_Wasm.v:161`), so export *i*'s adapter loads `offset=4*(i+1)` to
-get its closure and proceeds as the one-export case does. A Rocq tuple would
-*not* work: `(f, g, h)` is `pair (pair f g) h` --- Rocq's pair notation nests
-to the left, as [tuples](#structured-types) do --- so it needs a spine walk
-instead of a flat index. `n = 1` skips the wrapper, keeping the generated
-adapter comparable to the hand-written `plus1` one.
+A single-constructor inductive of arity *n* is `[ord, f₀, …, fₙ₋₁]`, so export
+*i* loads `offset=4*(i+1)`. A Rocq tuple would nest instead of indexing flatly.
+`n = 1` skips the wrapper.
 
 ### <a id="option-result"></a>`option` and `result` as values — `E-OPTION-UNIT`
 
-The outermost `result<T, error>` of an export is [the failure
-channel](#failure-channel). An `option` or `result` anywhere else is an
-ordinary value, and **both are carried, to any depth** — in a parameter, or in
-the ok half of the channel. Nothing in the gate counts levels, and nothing in
-the emitters special-cases a nested one: the flattening, the heap cells, the
-range checks' guards and the discriminant traps are each recursive.
-
-This is much cheaper than the general [structured-type](#structured-types)
-work, because the shapes are fixed and the ordinals are known rather than
-derived. Four WIT spellings land on two Stdlib types, and which constructor
-carries which case is a table rather than a formula — the `result` rows map
-`ok` to opposite constructors:
+One inside an export's channel is an ordinary value, carried to any depth in
+either position. Four WIT spellings map onto two Stdlib types:
 
 | WIT | Rocq | discriminant 0 | discriminant 1 |
 | --- | --- | --- | --- |
@@ -685,249 +307,70 @@ carries which case is a table rather than a formula — the `result` rows map
 | `result<T>` | `option T` | `ok` → `Some` | `err` → `None` |
 | `result<_, E>` | `option E` | `ok` → `None` | `err` → `Some` |
 
-The generated `interface.v` writes that mapping next to the signature, because
-nothing else in the pipeline would tell you that the ok half of a `result<T>`
-is `Some x`.
-
-A `result` with a payload in **neither** case is `E-OPTION-UNIT` rather than
-deferred work: there is no value to carry and no Stdlib sum to carry it in. An
-`enum` of two cases says the same thing and is carried today — and `bool`, the
-obvious thing to reach for instead, is the one inductive whose ordinals are
-swapped, so carrying it there would exchange the two cases.
-
-Two facts the emitter rests on, both measured by
-[`checks/representation.py`](checks/representation.py) rather than assumed:
-
-| | CertiRocq |
-| --- | --- |
-| a case with no payload | nullary, unboxed ordinal 0 → immediate `1` |
-| a case with one | boxed ordinal 0 or 1 → pointer to `[ord, x]` |
-
-So a sum is a pointer *or* an immediate depending on which case it holds, and
-the tag bit (`x & 1`, clear for a pointer) tells them apart — the same test
-the backend's own `match` makes. With one case of each kind that bit is the
-whole lift; with both boxed, as a `result<T, E>` is, the ordinal in the first
-cell picks the case and an immediate arriving there is impossible rather than
-merely unexpected, so it traps.
-
-Lowering is guarded the other way round. The canonical ABI zero-pads the flat
-slots of the case that was *not* sent, so a `u64` payload's range check runs
-under the discriminant that makes the payload live — a failure concluded from
-padding would be invented. Nested, that is *every* discriminant on the way
-down, not only the innermost one.
-
-What bounds the nesting is the canonical ABI's own flattening rather than a
-number here, and the plan cross-checks its flattening against `wit_parser`'s
-before emitting anything.
+`interface.v` writes that mapping next to the signature. A case with no payload
+is an immediate; one with a payload is a pointer to `[ord, x]`, and the tag bit
+tells them apart. Lowering checks a payload only under the discriminant that
+makes it live. A `result` with a payload in neither case is `E-OPTION-UNIT`
+([rejected outright](#option-result)); an `enum` of two cases is carried today.
 
 ### <a id="structured-types"></a>Records, tuples and variants — `E-STRUCTURED`, phase 3
 
-`record` is **carried, in any position and to any depth**, and runs against the
-real backend in `checks.backend`. A `tuple` and a `variant` are what is left of
-this section: the tuple because nothing names it, the variant because of its
-ordinals. (`option` and `result` have their own, cheaper path --- see
-[above](#option-result).)
+Records are carried in any position and to any depth; `checks.backend` runs
+them. Tuple and variant are what remain.
 
-**A record is one boxed constructor.** CertiRocq represents a constructor of
-arity *n* as `[ord, f₀, …, fₙ₋₁]` (`LambdaANF_to_Wasm.v:161`), and a WIT
-`record` is a named type with exactly one, so `Repr::Record` is that block,
-`interface.v` declares a Rocq `Record` whose fields are the projections, and
-the gate walks the fields with nothing left to say about the record itself ---
-except how many of them there are. [None](#record-empty) the component model
-cannot encode, and [one](#record-unboxed) the backend does not box, so neither
-is the block above; both are refused, at any depth.
+**Tuple.** A `tuple<u64, u64>` lays out and flattens exactly as a two-field
+record, so the plan and emitters would carry it as `Repr::Record` with
+positional names. What is missing is a name, and for more than two fields a
+shape: Rocq's `prod` nests left, so a three-tuple is two blocks. Either the
+generator invents a name per tuple (and structurally equal tuples agree on it)
+or it emits the `prod` nesting and the plan grows a representation. Undecided,
+and nothing needs a tuple yet.
 
-Three things that shape settles:
-
-- **There is no ordinal to get wrong.** Ordinals are assigned per class and
-  from zero in declaration order, so a type with one constructor has it as the
-  zeroth of whichever class it lands in --- `repr.rs`'s `SINGLE_CTOR_ORDINAL`,
-  the one constant there that is *not* measured, because the remapping that
-  makes `bool` the exception is a permutation and a permutation of one thing is
-  the identity. It is still written rather than assumed: the compiled
-  projections load it and trap on anything else, which an adapter tested over
-  a zeroed page would never find out.
-- **Two views of a field, agreeing by construction.** The canonical-ABI offset
-  comes from `SizeAlign::field_offsets`, the code `wasm-tools component new`
-  uses, so a field the adapter writes at offset 8 is the field the component
-  reads at offset 8. The Rocq cell holds the field as CertiRocq holds it,
-  which for a boxed field is a pointer to its payload --- so a `u64` field is
-  two loads, not one, and a field that is itself a record or a sum stays a
-  pointer, because those conversions read through it themselves.
-- **Flat values, not fields.** A record flattens by concatenating its fields'
-  flattenings, so a `u64` field's range check is *unguarded*: every field is
-  part of every value of the type, unlike a sum's payload, which is only there
-  when its case was the one sent. And what the flat-params limit counts
-  ([`E-ARITY-FLAT`](#arity)) is the total, so a record of nine `u64` fields
-  hits the limit that seventeen `u64` parameters do.
-
-**The reference, and the generator held to it.**
-[`examples/record`](examples/record) is the whole pipeline for
-
-```wit
-record span { start: u64, byte-length: u64 }
-export grow: func(s: span) -> result<span, error>;
-```
-
-hand-written before the emitter, measured against a module the real CertiRocq
-compiled, and running --- `checks.smoke` holds it to its six answers, and
-`checks.generated` now holds the emitter to its `interface.v`, `extraction.v`
-and `adapter.wat` token for token, so it is the independent check on the
-output rather than a target ahead of it. Four things it settles, none of them
-guessable from the sources:
-
-- A WIT record of two `u64`s **flattens** into two core `i64` parameters, so
-  nothing arrives by pointer and the adapter has to *build* the Rocq value:
-  a box per field, then `[0, &f₀, &f₁]` pointing at them. Each cell holds a
-  pointer, because a primitive int is itself boxed.
-- The backend reads each field through **its own table function**, which traps
-  unless the pointer is even and the ordinal is 0. So the ordinal has to be
-  written, not left to whatever the heap held --- and both of the example's
-  stubs arrive with a dirty heap, because over a zeroed page an adapter that
-  forgot it would pass.
-- The compiled body **reuses the caller's box** for a field it does not change,
-  which is why a record returned to the adapter can point back into the
-  adapter's own reservation. Nothing may assume the returned value is disjoint
-  from the argument.
-- The second out-of-memory check earns its keep here: a heap that runs out
-  *during* the call leaves the closure in `result`, and without the check the
-  component answers `ok({start: 0, byte-length: 0})`. `plus1`'s stub cannot
-  reach that branch.
-
-**What is left.**
-
-*The `variant`.* The harder of the two `E-STRUCTURED` still names. Its cases mix
-payload-carrying and payload-less ones, and CertiRocq numbers the two kinds in
-independent classes --- `match_ordinals_with_tag`
-(`theories/Glue/glue.v:947-960`) walks the constructors keeping a boxed and an
-unboxed counter --- so WIT's single case index needs a per-case translation
-table, not an offset. That function is the thing to port.
-
-[`examples/variant`](examples/variant) is the reference, for
+**Variant.** The harder one. CertiRocq numbers payload-carrying and
+payload-less constructors in independent classes, so WIT's single case index
+needs a per-case translation table rather than an offset — port
+`match_ordinals_with_tag` (`theories/Glue/glue.v:947-960`).
+[`examples/variant`](examples/variant) is the reference:
 
 ```wit
 variant byte-count { unknown, exactly(u64), at-least(u64), too-big }
 export add-byte: func(c: byte-count) -> result<byte-count, error>;
 ```
 
-and it is what makes the per-class ordinals visible:
-
 | WIT discriminant | case | CertiRocq |
 | --- | --- | --- |
-| 0 | `unknown` | immediate `1` --- unboxed ordinal 0 |
-| 1 | `exactly(u64)` | `[0, &payload]` --- boxed ordinal 0 |
-| 2 | `at-least(u64)` | `[1, &payload]` --- boxed ordinal 1 |
-| 3 | `too-big` | immediate `3` --- unboxed ordinal 1 |
+| 0 | `unknown` | immediate `1` — unboxed ordinal 0 |
+| 1 | `exactly(u64)` | `[0, &payload]` — boxed ordinal 0 |
+| 2 | `at-least(u64)` | `[1, &payload]` — boxed ordinal 1 |
+| 3 | `too-big` | immediate `3` — unboxed ordinal 1 |
 
-No arithmetic on the discriminant produces that column, which is why `enum`
-could get away with `2*d+1` and `variant` cannot: the adapter writes the cases
-out one at a time, in both directions, and the tag bit is what says which class
-a number belongs to. Lift `exactly` with ordinal 1 instead of 0 and the
-component answers `add-byte(exactly(41)) = ok(at-least(42))` --- it assembles,
-runs, and lies. Two further things it settles:
-
-- A variant **flattens** to its discriminant plus the join of its payloads, so
-  a four-case variant with two `u64` payloads arrives as an `i32` and an `i64`
-  --- and for the two cases that carry nothing, that `i64` is not part of the
-  value, so it must not be range-checked.
-- The compiled `match` **traps** on a value that is neither of the immediates
-  nor either ordinal, so the adapter's lowering does too. An adapter more
-  forgiving than the module it is linked into turns a representation that has
-  drifted into a wrong answer instead of a stop.
-
-*The `tuple`.* The easier one, in that a `tuple<u64, u64>` lays out and
-flattens exactly as a two-field record does, so the plan and the emitters
-would carry a pair as `Repr::Record` with positional field names. What is
-missing is a *name*, and for more than two fields a shape. A WIT
-`record` is a named type, so `interface.v` can declare a Rocq `Record` for it
-and `impl.v` can mention it; an anonymous tuple has no name to declare, and
-Rocq's own `prod` is a one-field-at-a-time nesting --- `A * B * C` is
-`(A * B) * C` --- so a three-tuple is two blocks, not one, and the projections
-are `fst`/`snd` chains rather than named fields. Either the generator invents
-a name per tuple (and then two structurally equal tuples in one world have to
-agree on it) or it emits the `prod` nesting and the plan grows a representation
-for it. Neither is decided, and nothing needs a tuple yet.
+No arithmetic on the discriminant produces that column, which is why `enum` can
+use `2*d+1` and `variant` cannot. A variant flattens to its discriminant plus
+the join of its payloads, so padding for cases that carry nothing must not be
+range-checked; the compiled `match` traps on an unknown value, so the adapter
+must too.
 
 ### <a id="record-unboxed"></a>A record with one field — `E-RECORD-UNBOXED`, phase 3
 
-```wit
-record wrapper { value: u64 }
-export unwrap: func(w: wrapper) -> result<u64, error>;
-```
+For one constructor with one field, erasure removes the block: the value **is**
+the field, with no projection, no ordinal and no tag test. An adapter that
+builds `[0, &field]` reads the header as the value. `checks.backend` found this
+the slow way with `record-nested`, which answered `ok({i: {a: 1}, b: 12})`
+instead of `ok({i: {a: 2}, b: 12})`.
 
-The block above is what a constructor of arity *n* looks like for *n ≥ 2*. For
-*n = 1* with one constructor, erasure takes the block away: the value **is** the
-field. `checks.backend` found this the slow way --- `record-nested` with a
-one-field `inner` assembled, ran, and answered
-
-```console
-$ wasmtime run --invoke 'bump({i: {a: 1}, b: 2})' rocq-world.comp.wasm
-ok({i: {a: 1}, b: 12})     # wanted ok({i: {a: 2}, b: 12})
-```
-
-`b` right, `a` untouched. The adapter had built `[0, &inner_block, &b]` and the
-compiled `a (i o) + 1` read the *header* of `inner_block` as the int, added one
-to it, and the lift read the caller's original box back out.
-
-The module CertiRocq compiles says it plainly. For `record outer { i: inner; b:
-int }` there are two projections, each testing the tag bit, checking ordinal 0
-and loading its cell:
-
-```wat
-(func $3 (param $0 i32)              ;; _2__f_case_known_197 -- `i`
- (if (i32.eqz (i32.and (local.get $0) (i32.const 1)))
-  (then (if (i32.eq (i32.load (local.get $0)) (i32.const 0))
-    (then (local.set $1 (i32.load (i32.add (local.get $0) (i32.const 4))))
-          ...)
-    (else (unreachable))))
-  (else (unreachable))))
-```
-
-For the one-field `inner` there is **no projection function at all**, and no
-tag test: `a (i o)` is the pointer the `i` projection returned, loaded as an
-int.
-
-```wat
-(call_indirect $0 (type $0) (local.get $0) (i32.const 3))  ;; i o
-(local.set $1 (global.get $global$2))
-...
-(i64.add (i64.load align=4 (local.get $1))                 ;; a (i o)
-         (i64.load align=4 (local.get $2)))                ;; the boxed 1
-```
-
-So there is no ordinal to write, no cell to write it beside, and no trap to
-catch the adapter writing one anyway --- which is why the gate refuses the
-shape instead of leaving it to be noticed. Every other disagreement between
-the adapter and the backend in this repo stops the component; this one answers.
-
-What it takes to lift is a representation, not a test: a `Repr` variant for a
-transparent record, so that the thirty-odd places that match on `Repr::Record`
-(the plan, both converters, the adapter and the round trip) are made to say
-what they do with it by the compiler rather than by inspection, and a claim in
-`repr.rs` with its measurement in `measured.rs` and
-`checks/representation.py` --- the unboxing is the backend's choice and may
-move. Its lift and lower are then the field's own, unchanged, with the WIT
-record's single flat value passing straight through.
-
-Until then both `bad/record-single.wit` and `bad/record-single-nested.wit` are
-refused --- the nested one because the field position is where this was found,
-and the site names the field (`` export bump: param `o`, field `i` ``) so the
-line to change is on screen. `a_one_field_record_is_not_a_block` pins it. The
-answer for a caller today is a second field, or the field's own type in the
-record's place, which is what the one-field record means anyway.
+What it takes is a representation, not a test: a `Repr` variant for a
+transparent record, so every match on `Repr::Record` is made to decide what it
+does, plus a claim in `repr.rs` measured in `measured.rs` and
+`checks/representation.py`. Until then `bad/record-single.wit` and
+`bad/record-single-nested.wit` are refused.
 
 ### <a id="f64"></a>`f64` — `E-FLOAT`, phase 4
 
-Waiting on the backend's `wasm-prim-floats` branch, where an `f64` is boxed just
-as a primitive int is — a pointer to 8 bytes holding the value — so the lift and
-lower are the `int63` shape with `f64.load`/`f64.store` in place of the i64
-ones. `main` still rejects `primFloat` in `translate_primitive_value`
-(`theories/CodegenWasm/LambdaANF_to_Wasm.v:238`), so this unblocks when that
-branch lands.
-
-One thing to confirm when implementing: NaN canonicalisation is `canon lift`'s
-job in the canonical ABI, which would mean the adapter only has to move the
-bits. Worth checking against `wasm-tools` rather than assuming.
+Waiting on the backend's `wasm-prim-floats` branch, where an `f64` is boxed like
+a primitive int — a pointer to 8 bytes holding the value — so the lift and lower
+are the `int63` shape with `f64.load`/`f64.store`. One thing to confirm when
+implementing: whether `canon lift` canonicalises NaN, leaving the adapter only
+to move bits.
 
 ---
 
@@ -935,211 +378,105 @@ bits. Worth checking against `wasm-tools` rather than assuming.
 
 ### <a id="integer-widths"></a>Narrow unsigned integers — `E-INT-WIDTH`
 
-`u8`, `u16` and `u32` are rejected for now; `u64` is the only width carried.
-They are exactly representable in a 63-bit int on the way *in*, but not on the
-way *out*: nothing stops the Rocq side returning an `int` larger than the
-declared width, so every lift needs a range check and somewhere to report the
-overflow. `u64` needs a guard in one direction only, which is why it came
-first.
+`u8`, `u16` and `u32` are exactly representable in a 63-bit int on the way in,
+but not on the way out: nothing stops the Rocq side returning a larger `int`, so
+every lift needs a range check and somewhere to report overflow. `u64` needs a
+guard in one direction only, which is why it came first.
+
+<a id="refinement-types"></a>Refinement types (`{ x : int | x < 2^32 }`) could
+move the check to compile time and erase the proof, but the erased arity, the
+moved trust boundary and the per-result proof burden remain to be settled. The
+erased arity is the sharp one: `sig`'s second field is a `Prop`, so the adapter
+has to know whether the erased constructor is `[ord, x, box]` or whether a pass
+strips the `Prop` field to `[ord, x]` — the "erased arity is not the Rocq
+arity" problem in its sharpest form, to be checked against `CertiRocq Show IR`
+rather than assumed, a good first case for the [representation
+suite](#representation).
 
 ### <a id="lists"></a>Lists — `E-LIST`
 
-Wanted. `list<T>` is the **only recursive type former the component model
-has**, which is what makes it expressible where a user-defined `tree` is not.
-A Rocq `list A` maps to `list<A'>` directly — no handles, no resources.
+`list<T>` is the only recursive type former the component model has, and Rocq's
+`list A` maps to it directly — no handles or resources. CertiRocq represents
+`nil` as immediate `1` and `cons` as a pointer to `[0, hd, tl]`.
 
-The Rocq side is a cons-cell walk, and the ordinals fall out of
-[`repr.rs`](bindgen/src/repr.rs)'s `ordinal::assign(&[0, 2])`:
+- **Lowering:** walk the caller's `(ptr, len)` array backwards, building cons
+  cells at `glob_mem_ptr` (36 bytes each, the compiler's own `get_ctor_size`).
+- **Lifting:** count in one pass, bump `glob_mem_ptr` for `len × size_of(T)`,
+  write in a second pass, return `(ptr, len)`.
 
-| | CertiRocq | WIT |
-| --- | --- | --- |
-| `nil` | nullary, unboxed ordinal 0 → immediate `1` | length 0 |
-| `cons hd tl` | boxed ordinal 0 → pointer to `[0, hd, tl]` | one element |
-
-- **Lowering.** The caller writes a contiguous array into *our* memory through
-  `cabi_realloc` and hands over `(ptr, len)`. The adapter walks it backwards
-  building cons cells at `glob_mem_ptr`, 36 bytes each — `4*(arity+1)+24`, the
-  compiler's own `get_ctor_size` (`LambdaANF_to_Wasm.v:131`), so the slack the
-  memory invariants expect is preserved.
-- **Lifting.** Walk the chain once to count, bump `glob_mem_ptr` for
-  `len × size_of(T)` at `T`'s canonical alignment, walk again writing elements,
-  return `(ptr, len)`. Two passes, because a bump allocator cannot grow a
-  region in place.
-
-What is genuinely new: `cabi_realloc` (align up, allocate, copy
-`min(old, new)`, never free — a dozen instructions against a bump allocator); a
-`memory.grow` path in the adapter, since it cannot reuse the backend's
-`call_grow_mem_if_necessary` (`:300`); `post-return`, legally a no-op because
-nothing is ever freed; and element recursion, so `list<list<u64>>` works by
-construction.
-
-**[Strings](#strings) pay for almost all of that** — same `cabi_realloc`, same
-growth path, same two-pass lift. So lists are best sequenced after strings,
-where the remaining delta is element recursion rather than new mechanism.
-
-Two caveats that do not go away:
-
-- **No GC.** A list of *n* elements costs *n* cons cells plus the
-  canonical-ABI array, all leaked until `max_mem_pages`. Fine one-shot; a
-  repeatedly-invoked list export will hit the ceiling unless the
-  [heap reset](#heap-reset) lands first.
-- **The memory binding.** `canon lift` has to be bound to the merged module's
-  single memory or list reads silently hit the wrong one. This is what makes
-  the `--enable-multimemory` flag in `testing/examples/component/plus1/Makefile`
-  worth verifying — it matters far more for lists than for scalars, where only
-  the result pointer touches memory.
-
-Still not expressible either way: recursive *user* inductives. `list` is the
-only recursive former, so a Rocq `tree` has no WIT type short of
-[resources](#resources).
+New machinery: `cabi_realloc`, a `memory.grow` path in the adapter,
+`post-return`, and element recursion so `list<list<u64>>` works by construction.
+[Strings](#strings) pay for most of it, so sequence lists after strings. No GC:
+a repeatedly invoked list export hits the ceiling unless the
+[heap reset](#heap-reset) lands first. `canon lift` must be bound to the merged
+module's single memory.
 
 ### <a id="strings"></a>Strings — `E-STRING`
 
-Wanted. A `string` is bytes under an encoding choice that `canon lift` forces
-on you, so it brings real canonical-ABI machinery with it:
-
-- `cabi_realloc`, because a caller lowering a string has to allocate in *our*
-  memory. Against a bump allocator this is nearly trivial — allocate and copy,
-  never free — but it has to exist, with the ownership and `post-return`
-  questions that follow.
-- Walking the Rocq value in both directions, and a decision between `string`,
-  `list ascii` and a byte array on the Rocq side.
-
-[`list<T>`](#lists) is wanted too, and shares almost all of this machinery, so
-the two are best sequenced together — strings first, since one concrete element
-type and one encoding is the smaller problem.
+A `string` is bytes under an encoding `canon lift` forces on you, so it brings
+`cabi_realloc` and walking the Rocq value in both directions. Against a bump
+allocator realloc is allocate-and-copy, never free, but ownership and
+`post-return` follow. A Rocq-side choice between `string`, `list ascii` and a
+byte array remains. Shares almost all machinery with [lists](#lists); strings
+first, since one concrete element type and one encoding is smaller.
 
 ### <a id="imports"></a>Imports — `E-IMPORT`
 
-Wanted, and the most expensive item here, because the cost is in the proof
-rather than the generator. `mod_imports := []` is baked into the correctness
-proof: `module_instantiate_INV_and_more_hold`
-(`LambdaANF_to_Wasm_instantiation.v:1234`) instantiates with `[]`, and the store
-invariants assume the resulting index layout. Exports-only keeps the existing
-proof intact; a world with imports means reworking `instantiation.v`.
+Wanted, and the most expensive item, because the cost is in the proof:
+`mod_imports := []` is baked into `LambdaANF_to_Wasm_instantiation.v`, and the
+store invariants assume the resulting index layout. A world with imports means
+reworking `instantiation.v`.
 
-An import also runs the ABI the other way round — the adapter becomes the
-*callee's* caller, lowering Rocq values out and lifting results back in — so
-it needs the lift/lower pair in the mirror direction as well.
+The mirror-direction lift/lower is already built: both conversions live in
+`bindgen/src/emit/convert.rs`, and `checks.roundtrip` runs each pair in both
+orders. What is missing is where a wrapper's box comes from: an export reserves
+boxes before the program runs, but a wrapper is called mid-program with the
+heap in use.
 
-**That half is already built, and already run.** It is not extra work waiting
-on the proof: both conversions live in `bindgen/src/emit/convert.rs`, and the
-only difference between an export's glue and an import wrapper's is the order
-they are composed in. An export takes a parameter canonical → Rocq and hands a
-result back Rocq → canonical; a wrapper takes its arguments the second way and
-its answer the first. So `componentize-formal roundtrip` emits a module
-composing each pair in *both* orders and `checks.roundtrip` runs it under
-`wasmtime`, requiring the value back unchanged — over both ends of
-`Uint63.int`'s range, both booleans, and every case of an `enum`. The
-direction no emitted adapter uses is tested before there is anything that uses
-it, which is the part of this item that could otherwise rot unnoticed: the
-gate refuses imports, so nothing else would exercise it.
-
-What is *not* built is where a wrapper's box comes from. Nothing in
-`convert.rs` allocates — a boxed value needs a cell and is handed the address.
-An export reserves every box up front, off the bump pointer, before the
-program runs ([#arity](#arity)); a wrapper is called mid-program with the heap
-in use, and finding a cell there is a question about imports rather than about
-the conversion.
-
-Imported *types*, which is what a `use` statement produces, are already fine:
-they are just names, and the gate lets them through.
-
-**Nor can the emitted module import its memory**, which is the tempting fix
-when the two core modules look like they depend on each other. Core modules
-inside a component may import memories from other core instances, so unlike at
-the component boundary --- where memory is not something a component can import
-at all --- this one is expressible. It is still ruled out twice over.
-
-`mod_imports := []` is the same premise as above: a module given a memory
-import is not the module the instantiation proof is about, and the store
-invariants are stated over a memory the module itself defines.
-
-And it would *create* the cycle rather than remove it. The adapter already
-imports `memory`, `mem_ptr`, `result`, `out_of_mem`, `main_function` and the
-table from the compiled module; having the compiled module import its memory
-back from the adapter makes each need the other, and a component's instance
-graph has to be acyclic. The shape that would work is a third module owning
-nothing but the memory, depending on no one and exported to both --- which buys
-nothing here, because `wasm-merge` runs before `component embed` and the merged
-module owns the memory, the globals, the table and the adapter's functions with
-no imports left to resolve.
-
-Nor does the direction need to stay one-way once there *are* imported
-functions, which is the case that looks like it should cycle: the compiled
-module imports the lowered wrapper from the adapter while the adapter imports
-the memory and globals from the compiled module. `wasm-merge` is a link step,
-so it resolves each import against the other module's exports and both edges
-disappear --- checked, with that exact pair of stand-in modules: the merge
-succeeds and the only import left is the host function, which is what
-`component new` satisfies from the world's imports. So imports cost
-`instantiation.v` and a box to put an argument in — not the linking shape,
-and not the mirror-direction lift/lower.
+Imported types (`use`) already pass the gate. Importing memory is ruled out
+twice: it is not the module the instantiation proof is about, and it would
+create a cycle (`wasm-merge` already resolves the compiled module's imports
+against the adapter's exports). So imports cost `instantiation.v` and a box,
+not the linking shape or the conversion.
 
 ### <a id="frontends"></a>The Lean frontend
 
-Lean needs something to get it into λ□. The
-[Peregrine project](https://peregrine-project.github.io/) — a separate effort,
-unaffiliated with this one — has that frontend, and routes Rocq and Lean (and
-Agda, which is [out of scope](#agda)) through λ□ (LambdaBox) into CertiRocq's
-`CodegenWasm`, the backend this uses. So Lean support here would mean invoking
-`peregrine` as an external tool, the way the build already invokes `wasm-tools`
-and `wasm-merge`.
-
-Almost nothing in the generator is about Rocq, which is what makes this cheap:
-only `interface.v` (a Lean signature in place of a `Module Type`) and `extraction.v`
-(a `peregrine wasm prog.ast` invocation rather than `CertiRocq Compile Wasm`).
-The adapter, the build rules and the gate are all shared. Three operations
-differ per frontend — render a type, render the interface file, drive
-compilation — so that is the interface a second one has to implement.
-
-λ□ is untyped — erasure replaces types and proofs with `tBox`, leaving only the
-inductive declarations, which is just what `repr.rs`'s ordinal assignment reads.
-So WIT must be the source of truth for interface types (it already is), and the
-representation is uniform across frontends; what a frontend can still move is
-the constructor order erasure produces. λ□ᵗ is no way around that: its
-term-level erasure *is* verified in MetaRocq, but the theorem is semantic and
-says nothing about the `box_type` annotations, which come from a separate
-`erase_type` pass [its authors state is not
-verified](https://arxiv.org/html/2108.02995) — relying on a typed target's
-checker to reject bad ones, which Wasm has no way to do.
-
-Three things to verify rather than assume:
-
-1. **Primitive integers.** `u64` maps to `Uint63.int`, boxed as 8 bytes.
-   Peregrine's Lean frontend turns `Nat` literals into `primInt`, but `UInt64`
-   is a separate type, and whether it erases to that primitive or to a structure
-   wrapping one decides whether the adapter reads a payload or a constructor
-   block.
-
-2. **Constructor ordinals.** `match_ordinals_with_tag` numbers constructors over
-   λ□'s list, so a WIT `enum` case reaches an ordinal only via erasure's order.
-   Lean's `Bool` is `false | true` like Rocq's — suggestive, not evidence.
-
-3. **What `peregrine wasm` emits.** Same backend, different revision: Peregrine
-   pins [`peregrine-project/certirocq#a8dc26fe`](https://github.com/peregrine-project/peregrine-tool/pull/101)
-   where this repo pins CertiRocq `main` at `943b52ae`. Two revisions agree
-   until they don't, and [`checks/representation.py`](checks/representation.py) is the
-   instrument — point it at a Peregrine-built module. Needs no generator work.
-
-Peregrine's Lean frontend supports no string literals, floats or arrays, which
-overlaps the gate's own gaps — a Lean world is the intersection of two subsets,
-so the gate would need to know which frontend it gates for.
-
-The selector exists already: `frontend = "rocq" | "lean"` in `component.toml`,
-`--frontend` on the CLI, Rocq by default. `lean` is *rejected* with a pointer
-here rather than quietly treated as `rocq`, which would mean handing Rocq
-artefacts to someone who asked for Lean.
+[Peregrine](https://peregrine-project.github.io/) already has a Lean frontend
+into λ□, the same substrate CertiRocq compiles, so Lean support means invoking
+`peregrine` as an external tool. Only `interface.v` (a Lean signature) and
+`extraction.v` (a `peregrine wasm` invocation) differ; the adapter, build rules
+and gate are shared. Three things to verify: whether Lean's `UInt64` erases to
+`primInt` or a structure, which constructor ordinals erasure produces, and what
+Peregrine's pinned CertiRocq revision emits. Peregrine's Lean frontend lacks
+string literals, floats and arrays, so a Lean world is the intersection of two
+subsets. The selector (`--frontend lean`) exists and rejects Lean with a
+pointer here rather than quietly producing Rocq artefacts.
 
 ### <a id="signed-integers"></a>Signed integers — `E-SIGNED`
 
-Only unsigned integers are supported. `s8` … `s64` need a decision first:
-`Sint63.int` (clean semantics, but `s64` does not fit in 63 bits) or
-`Uint63.int` under a two's-complement reading (fits the bit patterns, but then
-the Rocq side computes arithmetic that isn't the WIT arithmetic).
+Only unsigned integers are supported. `s8` … `s64` need a choice between
+`Sint63.int` (clean semantics, but `s64` does not fit) and `Uint63.int` under a
+two's-complement reading (fits the bit patterns, but the Rocq arithmetic is not
+WIT's). `s8` … `s32` are easy either way; `s64` is one bit short.
 
-`s8` … `s32` are easy either way. `s64` has the same problem `u64` already has,
-one bit short.
+### <a id="async"></a>Async — `E-ASYNC`
+
+`async func`, `future<T>`, `stream<T>`, `error-context` are 0.3.x shapes; 0.2.x
+has none and the guest ABI is synchronous, which is why the `wasi:http` 0.2.x
+target can be attempted.
+
+**Async can be confined to the adapter, but only as a synchronous projection.**
+The adapter is trusted WAT, so WasmCert's missing async semantics do not stop
+async lift/lower and stream/future built-ins from being written there. A
+synchronous core function cannot suspend, though, so the adapter can only
+bracket the call: materialise the request before it and stream the result out
+after it. That makes the Rocq side value-to-value and puts streaming semantics
+in trusted glue.
+
+**Faithful 0.3.x needs the substrate first.** The async ABI has to reach the
+compiled module, and nothing exists for CertiRocq's compiler to be proved
+against until WasmCert models async Wasm. Order: WasmCert, then CertiRocq, then
+this tool. The adapter-only route is an interim answer, not support.
 
 ---
 
@@ -1147,89 +484,55 @@ one bit short.
 
 ### <a id="maps"></a>`map` — `E-MAP`
 
-Everything [lists](#lists) need, plus a key ordering both sides agree on — and
-there is no canonical Rocq map type to agree with, so the choice would be the
-tool's to impose rather than to follow.
+Everything [lists](#lists) need, plus a key ordering both sides agree on; no
+canonical Rocq map type exists to follow, so the choice would be the tool's.
 
 ### <a id="f32"></a>`f32` — `E-FLOAT`
 
-Rocq's `PrimFloat` is binary64 only. There is no Rocq type that carries an
-`f32` faithfully, and mapping it to a `float` would silently round every value
-crossing the boundary in both directions. `f64` is the supported width
+Rocq's `PrimFloat` is binary64 only, so mapping `f32` to it would silently
+round every value in both directions. `f64` is the supported width
 ([phase 4](#f64)).
 
 ### <a id="char"></a>`char` — `E-CHAR`
 
-WIT's `char` is a Unicode scalar value. Rocq's `ascii` is 8-bit and `Stdlib` has
-nothing matching it, so there is no faithful mapping to pick.
+WIT's `char` is a Unicode scalar value; Rocq's `ascii` is 8-bit and Stdlib has
+nothing matching it.
 
 ### <a id="flags"></a>`flags` — `E-FLAGS`
 
 A bitfield with no natural Rocq counterpart. A record of booleans is a different
-WIT type with a different ABI, so mapping `flags` to one would be a lie about
-the interface.
+WIT type with a different ABI.
 
 ### <a id="resources"></a>Resources and handles — `E-RESOURCE`
 
-`resource` declarations, `own<T>`, `borrow<T>`, and resource methods (including
-constructors and statics). Resources need a handle table and destructors, and
-there is no GC to hang them off — the backend's bump allocator never frees. This
-is the escape hatch that *would* make recursive user inductives expressible
-(an opaque handle plus accessor methods, which is `glue.v`'s accessors lifted to
-the component level), so it's the natural thing to revisit if recursive types
-become the blocker.
-
-### <a id="async"></a>Async — `E-ASYNC`
-
-`async func`, `future<T>`, `stream<T>`, `error-context`. The async ABI is still
-moving, and the generated module is single-threaded and synchronous. Pin the
-sync subset.
+Resources need a handle table and destructors, and there is no GC to hang them
+off. This is the escape hatch that would make recursive user inductives
+expressible (an opaque handle plus accessor methods), so revisit it if recursive
+types become the blocker.
 
 ### <a id="exported-interfaces"></a>Exported interfaces — `E-EXPORT-INTERFACE`
 
 Only top-level `export name: func(..)` is handled. Exporting a named interface
 is mostly a naming question — the adapter would export
-`ns:pkg/iface#func` — but it interacts with [several exports](#multi-export),
-so it waits for that.
-
-### <a id="agda"></a>Agda — out of scope for now
-
-Peregrine also has an Agda frontend into λ□, so the machinery would be shared with
-[Lean](#frontends) — the adapter, the build rules and the gate are all
-frontend-independent. It is a scope decision, not a technical obstacle: two
-frontends is the commitment, and each one costs an interface renderer, a compile
-driver and its own answers to the three representation questions. `--frontend`
-accepts `rocq` and `lean` only, so asking for Agda is a CLI error rather than
-anything subtler.
+`ns:pkg/iface#func` — but it interacts with [several exports](#multi-export), so
+it waits for that.
 
 ### <a id="verified-glue"></a>Verified glue
 
-The adapter is **trusted**, exactly as the C backend's glue is
-(`theories/Glue/glue.v` is unverified). The verified core stays verified and the
-component shell is trusted glue — the same trust story CertiRocq already ships
-for C.
-
-Making it verified is a research project, not a task:
+The adapter is **trusted**, exactly as the C backend's glue is. Making it
+verified is a research project, not a task:
 
 1. There is no component-model or canonical-ABI formalisation in WasmCert-Rocq,
-   so the substrate would have to be built, not extended: component value types
-   with their size/alignment/flatten functions, the sync canonical ABI
-   (lift/lower/store/load, realloc, trap conditions), and component-level
-   instantiation.
-2. Verified means no `wasm-merge` — the adapter would have to be generated into
-   `mod_funcs`/`mod_exports` inside `LambdaANF_to_Wasm.v` so the whole artifact
-   is one module term in the theorem. That reverses this tool's separate-adapter
-   design.
-3. The theorem worth proving — invoking the export on `⟦a⟧` either signals OOM
-   or returns `⟦f a⟧` — needs `⟦·⟧` related through erasure, a
-   repeated-call invariant the one-shot `toplevel_theorem.v` doesn't give, and a
-   memory-layout induction per type former against the `INV_*` invariants.
+   so the substrate would have to be built.
+2. Verified means no `wasm-merge`: the adapter would be generated into
+   `mod_funcs`/`mod_exports`, reversing the separate-adapter design.
+3. The theorem — invoking the export on `⟦a⟧` either signals OOM or returns
+   `⟦f a⟧` — needs a repeated-call invariant and a memory-layout induction per
+   type former.
 
-Roughly a year of focused work for a Tier 0/1 subset. The cheaper standalone
-contribution hiding in here is the **canonical ABI as an executable Rocq spec**,
-differential-tested against `wasm-tools` — useful to anyone checking
-`wit-bindgen`, and it validates the highest-risk code in this tool without the
-lift/lower proofs.
+Roughly a year for a Tier 0/1 subset. The cheaper standalone contribution is the
+**canonical ABI as an executable Rocq spec**, differential-tested against
+`wasm-tools`.
 
 ---
 
@@ -1239,47 +542,22 @@ Not deferred features — there is nothing to build.
 
 ### <a id="nothing-to-compile"></a>No exported function — `E-NO-EXPORT`
 
-A world with no exported function gives CertiRocq nothing to compile. Note that
-this also fires alongside `E-EXPORT-INTERFACE`, when every export the world has
-is a namespaced interface.
+A world with no exported function gives CertiRocq nothing to compile. This also
+fires alongside `E-EXPORT-INTERFACE` when every export is a namespaced
+interface.
 
 ### <a id="record-empty"></a>A record with no fields — `E-RECORD-EMPTY`
 
-```wit
-record nothing { }
-export echo: func(n: nothing) -> result<nothing, error>;
-```
-
-Nothing about the *representation* is in the way. A record with no fields has a
-nullary constructor, so the value is an immediate — the same shape every `enum`
-case already has — and the canonical ABI flattens it to no core values at all,
-so the export would take a WIT parameter and no wasm one. The emitters would
-have had no new case to grow.
-
-What refuses it is the component model, whose `record` has at least one field.
-`wit-parser` accepts the declaration, so the whole build runs: the adapter is
-emitted, the Rocq side compiles, `wasm-merge` resolves every import, and then
-
-```console
-$ wasm-tools component new rocq-world.embed.wasm -o rocq-world.comp.wasm
-error: decoding custom section component-type
-
-Caused by:
-    0: record type must have at least one field (at offset 0x27)
-```
-
-— an offset into a custom section, four build steps after the line responsible,
-reported by a tool that never saw the WIT file. So the gate says it instead,
-while the field list is still on screen. `an_empty_record_has_no_component_type`
-pins that, and `bad/record-empty.wit` is the world above.
-
-The answer for a caller who wants one is that a record carrying no information
-is one the export does not need to take. There is nothing to build here unless
-the component model grows a type for it.
+A record with no fields is a nullary immediate that the canonical ABI flattens
+to no core values, so the emitters would need no new case. The component model
+refuses it — `record` must have at least one field — and `wasm-tools component
+new` reports it four build steps later, at an offset into a custom section. The
+gate says it instead, while the field list is still on screen.
+`bad/record-empty.wit` pins it. A record carrying no information is one the
+export does not need to take.
 
 ### <a id="unresolved"></a>Unresolved world — `E-UNKNOWN`
 
-A type that survived resolution unresolved, which in practice means a missing
-dependency package rather than anything about the backend. `wit-parser`
-normally reports this first; the check exists so an unresolved type can never
-be mistaken for a supported one.
+A type that survived resolution unresolved, in practice meaning a missing
+dependency package. `wit-parser` normally reports this first; the check exists
+so an unresolved type is never mistaken for a supported one.
