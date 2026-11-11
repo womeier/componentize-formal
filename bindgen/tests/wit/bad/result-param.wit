@@ -1,0 +1,9 @@
+package local:bad;
+
+// A `result` is the error channel only as the *return* type of the export.
+// Anywhere else it is an ordinary structured type that has to be lowered into
+// the heap, so this is E-OPTION and not a second channel.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export retry: func(previous: result<u64, error>) -> result<u64, error>;
+}

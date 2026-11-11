@@ -322,7 +322,7 @@ emitted.
 
 | Case | Pins | |
 | --- | --- | --- |
-| `succ` at `u64`, with 0, 2⁶³−1 and 2⁶³ | the boxed primitive int in both positions, the modular wrap, and the range guard | runs |
+| `succ` at `u64`, with 0, 2⁶³−1, 2⁶³ and 2⁶⁴−1 | the boxed primitive int in both positions, the modular wrap, and the range guard at both ends of the half a `u64` has and `Uint63.int` has not | runs |
 | `to-int`, `is-zero` | the tagged immediate, each direction paired with a result of another representation | runs |
 | `is-green`, `colour-of` | nullary ordinals being the declaration index — first case, a middle one, the last | runs |
 | `sub` on two `u64` | one application per argument, in declaration order ([#arity](#arity)) | runs |

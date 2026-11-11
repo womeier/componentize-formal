@@ -1,0 +1,9 @@
+package local:good;
+
+// A `u64` in the result and none in the parameters. Lifting a 63-bit int into
+// a u64 is always exact, so this export cannot be out of range -- out of
+// memory is its only failure, and the adapter gets no range check.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export widen: func(b: bool) -> result<u64, error>;
+}

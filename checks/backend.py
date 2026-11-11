@@ -96,6 +96,12 @@ EXPECTED: dict[str, dict] = {
             # check and the reason every export returns a result
             # (TODO.md#failure-channel).
             ("9223372036854775808", "err(out-of-range)"),
+            # The other end of the half that has no counterpart. 2**63 is the
+            # boundary and a check written against it passes the case above;
+            # this one needs the check to be the comparison it is, so that the
+            # whole top half is rejected rather than losing its high bit. All
+            # ones is also the value a sign error reads as -1.
+            ("18446744073709551615", "err(out-of-range)"),
         ],
         "oom": True,
     },

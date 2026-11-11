@@ -82,6 +82,15 @@ world wrapper-world {
 }
 "#;
 
+/// A `u64` on the way out and none on the way in: the direction that cannot
+/// narrow, so nothing about it needs checking.
+const WIDEN: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export widen: func(b: bool) -> result<u64, error>;
+}
+"#;
+
 /// Mixed boxing, to pin that the boxes are numbered over the *boxed*
 /// parameters rather than over all of them.
 const MIXED: &str = r#"package local:demo;
@@ -204,6 +213,103 @@ fn only_a_narrowing_parameter_gets_a_range_check() {
     let negb = plan_for("negb", NEGB);
     assert_eq!(negb.export.discriminants.out_of_range, None);
     assert_eq!(negb.export.failures.len(), 1, "only out of memory");
+}
+
+/// Where the boundary is, in the one place it is actually enforced.
+///
+/// `Uint63.int` holds 0..2^63-1, a `u64` holds 0..2^64-1, and the whole top
+/// half has no counterpart. The check is a *signed* comparison against zero
+/// because an i64 is negative on exactly those values -- so this pins both the
+/// boundary and the one-sided-ness of it: `i64.lt_s ... 0` rejects 2^63 and
+/// 2^64-1 alike, where an equality against 2^63, or an unsigned comparison,
+/// would let most of the top half through to lose its high bit in silence.
+/// `checks/backend.py` runs both ends of that half against the real backend.
+#[test]
+fn the_range_check_is_the_2_63_boundary() {
+    let adapter = emit::adapter::adapter(&plan_for("plus1", PLUS1));
+    assert!(
+        adapter.contains("(if (i64.lt_s (local.get $val) (i64.const 0))"),
+        "{adapter}"
+    );
+
+    // And before the program runs, not after: a rejected call must not have
+    // allocated, and `main_function` is what allocates.
+    let check = adapter
+        .find("(i64.lt_s (local.get $val)")
+        .expect("the range check");
+    let run = adapter
+        .find("(call $main_function)")
+        .expect("the call into the backend");
+    assert!(
+        check < run,
+        "the range check runs after the program:\n{adapter}"
+    );
+
+    // The u64 is stored into its box only once past the check, for the same
+    // reason.
+    let store = adapter
+        .find("(i64.store (local.get $arg")
+        .expect("the argument store");
+    assert!(check < store, "{adapter}");
+}
+
+/// The other direction never narrows: a 63-bit int lifts into a `u64`
+/// exactly, so a world with a `u64` result and no `u64` parameter gets no
+/// range check and no discriminant to report one through.
+///
+/// Worth asserting rather than assuming, because the cost of being wrong is
+/// asymmetric. A missing check loses a value's top bit quietly; a check that
+/// should not be there stores a case the world never declared, which is
+/// `plan.rs`'s converse assertion -- and neither shows up as a build failure.
+#[test]
+fn a_u64_result_needs_no_range_check() {
+    let plan = plan_for("widen", WIDEN);
+    assert_eq!(plan.export.discriminants.out_of_range, None);
+    assert_eq!(plan.export.failures.len(), 1, "only out of memory");
+    assert_eq!(plan.export.ok, Repr::Int63, "the result is still carried");
+
+    let adapter = emit::adapter::adapter(&plan);
+    assert_eq!(
+        adapter.matches("i64.lt_s").count(),
+        0,
+        "nothing to range-check:\n{adapter}"
+    );
+    // The lift itself is there, so this is not passing because the result went
+    // missing.
+    assert!(adapter.contains("(i64.load"), "{adapter}");
+}
+
+/// The emitters do not trust the gate. An `option` that reached them anyway --
+/// the gate and the plan are separate code and can drift -- is refused with a
+/// message that says which layer was supposed to catch it, rather than
+/// emitting an adapter for a type with no representation.
+#[test]
+fn an_option_is_refused_by_the_emitter_too() {
+    let err = refusal(
+        "option",
+        r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export unwrap: func(x: option<u64>) -> result<u64, error>;
+}
+"#,
+    );
+    assert!(err.contains("option"), "{err}");
+    assert!(err.contains("no Rocq counterpart"), "{err}");
+    assert!(err.contains("the gate should have rejected"), "{err}");
+
+    // Same for the result position, which is a different call into `repr_of`.
+    let err = refusal(
+        "nested-option",
+        r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export lookup: func(k: u64) -> result<option<u64>, error>;
+}
+"#,
+    );
+    assert!(err.contains("no Rocq counterpart"), "{err}");
+    assert!(err.contains("the result of `lookup`"), "{err}");
 }
 
 /// Every parameter that can be out of range gets its own check, and there is

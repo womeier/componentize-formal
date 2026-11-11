@@ -1,0 +1,10 @@
+package local:bad;
+
+// Behind an alias. The gate follows `type` definitions, so naming an option
+// does not hide it -- good/alias.wit is the same aliasing on a world that
+// passes.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  type maybe-int = option<u64>;
+  export unwrap: func(x: maybe-int) -> result<u64, error>;
+}

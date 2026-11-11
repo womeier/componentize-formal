@@ -99,6 +99,10 @@ fn rejects_what_is_merely_unbuilt() {
     // signal; the other positions need lowering into the heap.
     expect_bad("nested-option.wit", &["E-OPTION"]);
     expect_bad("option-param.wit", &["E-OPTION"]);
+    expect_bad("option-alias.wit", &["E-OPTION"]);
+    // A `result` outside the return type is one of those other positions: the
+    // channel is positional, not a shape the gate accepts wherever it reads it.
+    expect_bad("result-param.wit", &["E-OPTION"]);
     expect_bad("nullary.wit", &["E-ARITY-0"]);
     expect_bad("no-result.wit", &["E-NO-RESULT"]);
     expect_bad("multi-export.wit", &["E-MULTI-EXPORT"]);
@@ -106,6 +110,38 @@ fn rejects_what_is_merely_unbuilt() {
     for width in ["u8", "u16", "u32"] {
         expect_bad(&format!("int-{width}.wit"), &["E-INT-WIDTH"]);
     }
+}
+
+/// Where an `option` sits is named, and both positions get the same code: the
+/// gate has nothing cheaper to say about a parameter than about a result,
+/// because either one has to be lowered into or lifted out of the heap.
+///
+/// Which is the general shape of nesting here -- no type former is carried
+/// inside another. The one exception is the error channel, a `result` the gate
+/// reads positionally and strips before walking what it holds, so the deepest
+/// a passing world goes is `result<scalar, error>`.
+#[test]
+fn an_option_is_refused_in_every_position() {
+    let param: Vec<_> = report(&fixture("bad", "option-param.wit"))
+        .rejections
+        .into_iter()
+        .map(|r| (r.code, r.what, r.site))
+        .collect();
+    assert_eq!(param.len(), 1, "{param:?}");
+    assert_eq!(param[0].0, "E-OPTION");
+    assert!(param[0].1.starts_with("option"), "{:?}", param[0]);
+    assert!(param[0].2.contains("param"), "{:?}", param[0]);
+
+    // Nested in the ok half of a channel that is itself fine. The channel is
+    // not what is refused -- the type it carries is.
+    let nested: Vec<_> = report(&fixture("bad", "nested-option.wit"))
+        .rejections
+        .into_iter()
+        .map(|r| (r.code, r.site))
+        .collect();
+    assert_eq!(nested.len(), 1, "{nested:?}");
+    assert_eq!(nested[0].0, "E-OPTION");
+    assert!(nested[0].1.contains("result"), "{nested:?}");
 }
 
 #[test]
@@ -165,6 +201,26 @@ fn a_u64_parameter_is_a_failure_mode() {
     );
     // A clean world with a proper channel produces no warnings at all.
     assert!(report(&path).warnings.is_empty());
+
+    // The converse, which is the half that could go wrong quietly: a `u64` in
+    // the *result* and none in the parameters cannot be out of range, so the
+    // only failure is out of memory. A range check derived from "the world
+    // mentions u64" rather than from the parameters would show up here, and
+    // the adapter side of it is `a_u64_result_needs_no_range_check`.
+    let widen = fixture("good", "widen.wit");
+    let (resolve, world) = resolve_world(&widen, None).unwrap();
+    let f = resolve.worlds[world]
+        .exports
+        .values()
+        .find_map(|item| match item {
+            WorldItem::Function(f) => Some(f),
+            _ => None,
+        })
+        .expect("one exported function");
+    assert_eq!(
+        support::failure_modes(&resolve, f),
+        vec![support::Failure::OutOfMemory]
+    );
 }
 
 /// A code cannot be added without documenting it.
