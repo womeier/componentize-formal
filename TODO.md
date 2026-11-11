@@ -307,9 +307,10 @@ whole pipeline — `rocq c`, `wasm-merge`, `component embed`,
 
 It belongs in `nix flake check` beside 1b --- otherwise a CertiRocq bump lands
 without anyone noticing the offsets moved --- and it cannot be written before the
-generator emits adapters. What it can no longer assume is a free CertiRocq on
-the per-push path: see [the per-push path](#per-push) below, which the table
-export cost us.
+generator emits adapters. What it can no longer assume is a CertiRocq that
+comes free from an upstream cache; it comes from one this project owns and
+refills, which is what keeps it on the per-push path at all: see [the per-push
+path](#per-push) below, which the table export cost us.
 
 For the canonical-ABI half, the equivalent check is differential: diff generated
 layouts against `cargo component`'s for the matching Rust signature — see
@@ -384,25 +385,54 @@ belong: `checks/representation.py` fails if the table is not exported, naming
 the input as the thing to move, and the generated build rules guard the link
 step the same way.
 
-#### <a id="per-push"></a>Open: the per-push path no longer holds
+#### <a id="per-push"></a>The per-push path, bought with a cache of our own
 
-`.github/workflows/ci.yml` runs `nix build --max-jobs 0 .#certirocq` before
-`nix flake check`, so that a collected cache fails in seconds instead of
-starting MetaRocq on a runner. That assertion now fails by construction, all
-three moved packages being uncached, and without it `nix flake check` would
-try the build --- hours, on a 6-hour runner. `pin.yml`'s header still says
-nothing heavy is ever built locally. So CI cannot be green on this pin. Three
-ways out, none taken:
+The first way out was taken. `womeier.cachix.org` is this project's own
+Cachix, declared in `flake.nix`'s `nixConfig` beside the three upstream ones,
+and `.github/workflows/ci.yml` both reads and writes it through
+`cachix/cachix-action`. CertiRocq, MetaRocq and WasmCert-Coq are substituted
+from it like anything else, so a per-push run is minutes again --- and so is
+the first `nix develop` of anyone who accepts the flake's `nixConfig` and can
+have it honoured, which the old arrangement never covered at all: it only ever
+made CI cheap.
 
-- **A Cachix this repo owns**, with `--max-jobs 0` pointing at it. Restores
-  the path for everyone cloning, not just CI; needs a cache, a token, and a
-  job that pushes when `flake.lock` moves.
+What did not survive is the assertion. `nix build --max-jobs 0 .#certirocq`
+existed to turn a collected cache into a failure in seconds instead of a
+MetaRocq build on a runner, and with the three moved packages uncached
+upstream it failed by construction. It is gone from `ci.yml`, which now runs
+`nix flake check` twice --- once as eval over every system, once for real ---
+and nothing else. So the per-push gate no longer asserts anything about
+caches. A cold project cache shows up as a long run bounded by
+`timeout-minutes: 330`, not as a fast failure. That trade is deliberate: fast
+failure was only ever available while upstream held everything, and the table
+export is what stopped it holding.
+
+The checking moved to `.github/workflows/pin.yml`, which is where it belongs
+--- it is a claim about the pin, not about a push. Mondays at 04:17 UTC, on a
+push touching `flake.nix`, `flake.lock` or the workflow, and on demand, it
+runs `checks/cache_hits.py` against the *upstream* substituters only, named in
+the script and passed with `--no-accept-flake-config` so that our own copy
+cannot answer for the pin and hide an upstream GC behind it. Then `nix build
+.#certirocq`, whose closure the cachix step pushes: nothing keeps a Cachix
+path alive but being pushed, so that step is both the refill and the check
+that what CI depends on is still there.
+
+What it costs is a cache, a token (`secrets.CACHIX_AUTH_TOKEN`), and that job
+to keep it warm. A fork PR has no token; `cachix-action` then substitutes
+without pushing, which is the behaviour we want, since making the missing
+secret fatal would fail every fork PR.
+
+The other two ways out are unchanged, and both are still better than paying
+for this one:
+
 - **Split the gate.** Only `representation` needs Rocq; the other six are the
-  `bindgen` shell and can stay per-push. Cheap, and it gives up the one check
-  that holds `repr.rs` to the real backend.
+  `bindgen` shell and could stay per-push on their own. Cheap, and it gives up
+  the one check that holds `repr.rs` to the real backend --- unnecessary while
+  the cache holds, and the thing to reach for if it stops.
 - **Get the export upstream.** Merged and released, CertiRocq is a nixpkgs
-  cache hit again. Slowest, and the only one that removes the problem instead
-  of paying for it.
+  cache hit again, which retires this cache, all three source builds, and the
+  ground `cache_hits.py` gave up, in one move. Slowest, and the only one that
+  removes the problem instead of paying for it.
 
 ### <a id="extract-inductives"></a>A remapping the generator cannot see
 
