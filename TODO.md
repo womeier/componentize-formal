@@ -577,7 +577,7 @@ Integers are carried by **Rocq's primitive 63-bit unsigned ints**
 representation there, so the generator warns at the position where the
 narrowing happens and the adapter guards rather than truncating.
 
-### <a id="arity"></a>Export shape — `E-ARITY-0`, `E-NO-RESULT`, phase 2
+### <a id="arity"></a>Export shape — `E-ARITY-0`, `E-ARITY-FLAT`, `E-NO-RESULT`, phase 2
 
 **Several parameters are supported now.** `E-ARITY-N` is gone, and `func(a: T,
 b: U, ...) -> result<V, error>` goes through. What settled it was a
@@ -615,9 +615,24 @@ each needing its own adapter prologue:
   skips `call_indirect` entirely.
 - **No result.** Nothing to lift, and nowhere to put the out-of-memory signal.
 
-Only *n* = 2 has been run end to end. The emitter is written for any *n* and
-the generated adapter for three parameters parses, but three has not been
-through a real backend.
+**The arity is bounded, but not by the arity.** `E-ARITY-FLAT`: above
+`MAX_FLAT_PARAMS` = 16 flat values the canonical ABI stops passing one core
+parameter per WIT parameter and passes a pointer to a tuple in memory instead,
+which is a prologue the adapter does not have. What counts is flat values, not
+parameters, and that stopped being the same number when
+[sums](#option-result) landed: a sum flattens to a discriminant plus the join
+of its cases, so nine `option<u64>` parameters hit the limit that seventeen
+`u64` ones do. The refusal says how many flat values the parameters actually
+take, because nine being "more than 16" is otherwise unreadable. Raised in the
+planner rather than the gate -- it is the one refusal that needs the layout,
+since the gate walks types and this is a property of all of them together.
+
+Nine `u64` parameters do go through: nine applications, nine blocks at an
+8-byte stride above the return area, `mem_ptr` advanced by 88, and an
+out-of-memory check after each. Only *n* = 2 has been run end to end, though.
+The emitter is written for any *n* up to the flat limit, and the generated
+adapter for three parameters parses, but three has not been through a real
+backend.
 
 ### <a id="multi-export"></a>Several exports — `E-MULTI-EXPORT`, phase 2
 

@@ -571,3 +571,48 @@ fn a_mistake_in_a_vendored_tree_is_reported_not_panicked() {
     assert!(err.contains("expected ';'"), "{err}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Every code in the catalogue has a `TODO.md` section saying what it would
+/// take to lift, and every code the gate raises is in the catalogue.
+///
+/// The gate's module doc has always said to keep the two in sync; this is that
+/// sentence as a check. The second direction is the one that rots: a refusal
+/// moved out of the gate -- `E-ARITY-FLAT` lives in the planner, because only
+/// the canonical-ABI layout knows the flat count -- keeps working while
+/// quietly leaving the catalogue, and then nothing documents it.
+#[test]
+fn every_code_is_documented() {
+    let todo = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("TODO.md"),
+    )
+    .unwrap();
+    let undocumented: Vec<_> = componentize_formal::codes::ALL
+        .iter()
+        .filter(|code| !todo.contains(**code))
+        .collect();
+    assert!(
+        undocumented.is_empty(),
+        "codes with no TODO.md section: {undocumented:?}"
+    );
+
+    let mut raised = BTreeSet::new();
+    for kind in ["bad", "good"] {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wit")
+            .join(kind);
+        for entry in std::fs::read_dir(dir).unwrap() {
+            raised.extend(codes(&entry.unwrap().path()));
+        }
+    }
+    let stray: Vec<_> = raised
+        .iter()
+        .filter(|code| !componentize_formal::codes::ALL.contains(&code.as_str()))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "codes raised by a fixture but missing from codes::ALL: {stray:?}"
+    );
+}

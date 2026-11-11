@@ -25,6 +25,7 @@
 
 use std::fmt;
 
+use crate::codes;
 use wit_parser::{
     Function, FunctionKind, Resolve, Type, TypeDefKind, TypeId, TypeOwner, WorldItem,
 };
@@ -146,7 +147,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
             // imported methods, so its methods arrive here. Report them as
             // what they are rather than as plain imports.
             WorldItem::Function(f) if f.kind != FunctionKind::Freestanding => rep.reject(
-                "E-RESOURCE",
+                codes::RESOURCE,
                 format!("{name} (a resource method)"),
                 site,
                 Reason::OutOfScope,
@@ -154,7 +155,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
                 RESOURCE_NOTE,
             ),
             WorldItem::Function(_) => rep.reject(
-                "E-IMPORT",
+                codes::IMPORT,
                 format!("import {name}"),
                 site,
                 Reason::Later,
@@ -172,7 +173,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
                     }
                 } else {
                     rep.reject(
-                        "E-IMPORT",
+                        codes::IMPORT,
                         format!("import {name}"),
                         site,
                         Reason::Later,
@@ -194,7 +195,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
                 check_function(resolve, f, &name, &mut rep);
             }
             WorldItem::Interface { .. } => rep.reject(
-                "E-EXPORT-INTERFACE",
+                codes::EXPORT_INTERFACE,
                 format!("export {name}"),
                 format!("world {}", w.name),
                 Reason::OutOfScope,
@@ -210,7 +211,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
 
     if exported_funcs == 0 {
         rep.reject(
-            "E-NO-EXPORT",
+            codes::NO_EXPORT,
             "a world with no exported functions",
             format!("world {}", w.name),
             Reason::Malformed,
@@ -220,7 +221,7 @@ pub fn check_world(resolve: &Resolve, world: wit_parser::WorldId) -> Report {
     }
     if exported_funcs > 1 {
         rep.reject(
-            "E-MULTI-EXPORT",
+            codes::MULTI_EXPORT,
             format!("{exported_funcs} exported functions"),
             format!("world {}", w.name),
             Reason::Planned(2),
@@ -246,7 +247,7 @@ fn check_world_type(resolve: &Resolve, id: TypeId, site: &str, rep: &mut Report)
     let def = &resolve.types[id];
     if matches!(def.kind, TypeDefKind::Resource) {
         rep.reject(
-            "E-RESOURCE",
+            codes::RESOURCE,
             describe(def),
             site.to_string(),
             Reason::OutOfScope,
@@ -260,7 +261,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
     match f.kind {
         FunctionKind::Freestanding => {}
         FunctionKind::AsyncFreestanding => rep.reject(
-            "E-ASYNC",
+            codes::ASYNC,
             format!("async func {name}"),
             format!("export {name}"),
             Reason::OutOfScope,
@@ -269,7 +270,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
              single-threaded and synchronous",
         ),
         _ => rep.reject(
-            "E-RESOURCE",
+            codes::RESOURCE,
             format!("func {name} (a resource method)"),
             format!("export {name}"),
             Reason::OutOfScope,
@@ -285,7 +286,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
     // shorter loop.
     if f.params.is_empty() {
         rep.reject(
-            "E-ARITY-0",
+            codes::ARITY_0,
             format!("func {name}() with no parameters"),
             format!("export {name}"),
             Reason::Planned(2),
@@ -307,7 +308,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
 
     let Some(result) = f.result else {
         rep.reject(
-            "E-NO-RESULT",
+            codes::NO_RESULT,
             format!("func {name} returning nothing"),
             format!("export {name}"),
             Reason::Planned(2),
@@ -352,7 +353,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
                 .join(", ");
             match other {
                 Channel::WrongError(shown) => rep.reject(
-                    "E-ERROR-TYPE",
+                    codes::ERROR_TYPE,
                     format!("result<_, {shown}>"),
                     format!("export {name}: result"),
                     Reason::Malformed,
@@ -364,7 +365,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
                     ),
                 ),
                 _ => rep.reject(
-                    "E-NO-CHANNEL",
+                    codes::NO_CHANNEL,
                     "a result type with no error channel",
                     format!("export {name}: result"),
                     Reason::Malformed,
@@ -531,7 +532,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, site: &str, rep: &mut Report) {
         // and reported through the error channel.
         Type::U64 => {}
         Type::U8 | Type::U16 | Type::U32 => rep.reject(
-            "E-INT-WIDTH",
+            codes::INT_WIDTH,
             unsigned_name(ty),
             site.to_string(),
             Reason::Later,
@@ -540,7 +541,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, site: &str, rep: &mut Report) {
              on the way back out, because nothing stops the Rocq side returning a larger int",
         ),
         Type::S8 | Type::S16 | Type::S32 | Type::S64 => rep.reject(
-            "E-SIGNED",
+            codes::SIGNED,
             signed_name(ty),
             site.to_string(),
             Reason::Later,
@@ -549,7 +550,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, site: &str, rep: &mut Report) {
              ones need a choice between Sint63 and a two's-complement reading of Uint63",
         ),
         Type::F64 => rep.reject(
-            "E-FLOAT",
+            codes::FLOAT,
             "f64",
             site.to_string(),
             Reason::Planned(4),
@@ -559,7 +560,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, site: &str, rep: &mut Report) {
              lower are the int63 shape with an f64 load and store",
         ),
         Type::F32 => rep.reject(
-            "E-FLOAT",
+            codes::FLOAT,
             "f32",
             site.to_string(),
             Reason::OutOfScope,
@@ -568,7 +569,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, site: &str, rep: &mut Report) {
              faithfully; f64 is the supported width",
         ),
         Type::Char => rep.reject(
-            "E-CHAR",
+            codes::CHAR,
             "char",
             site.to_string(),
             Reason::OutOfScope,
@@ -577,7 +578,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, site: &str, rep: &mut Report) {
              Stdlib has no char type matching WIT's",
         ),
         Type::String => rep.reject(
-            "E-STRING",
+            codes::STRING,
             "string",
             site.to_string(),
             Reason::Later,
@@ -586,7 +587,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, site: &str, rep: &mut Report) {
              cabi_realloc and walking the Rocq value in both directions with it",
         ),
         Type::ErrorContext => rep.reject(
-            "E-ASYNC",
+            codes::ASYNC,
             "error-context",
             site.to_string(),
             Reason::OutOfScope,
@@ -636,7 +637,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         // the one inductive whose ordinals are swapped, so it would exchange
         // the two cases.
         TypeDefKind::Result(r) if r.ok.is_none() && r.err.is_none() => rep.reject(
-            "E-OPTION-UNIT",
+            codes::OPTION_UNIT,
             shown.clone(),
             site.to_string(),
             Reason::Malformed,
@@ -651,7 +652,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         }
 
         TypeDefKind::Record(_) | TypeDefKind::Tuple(_) | TypeDefKind::Variant(_) => rep.reject(
-            "E-STRUCTURED",
+            codes::STRUCTURED,
             shown.clone(),
             site.to_string(),
             Reason::Planned(3),
@@ -661,7 +662,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         ),
 
         TypeDefKind::Flags(_) => rep.reject(
-            "E-FLAGS",
+            codes::FLAGS,
             shown.clone(),
             site.to_string(),
             Reason::OutOfScope,
@@ -671,7 +672,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         ),
 
         TypeDefKind::List(_) | TypeDefKind::FixedLengthList(..) => rep.reject(
-            "E-LIST",
+            codes::LIST,
             shown.clone(),
             site.to_string(),
             Reason::Later,
@@ -682,7 +683,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         ),
 
         TypeDefKind::Map(..) => rep.reject(
-            "E-MAP",
+            codes::MAP,
             shown.clone(),
             site.to_string(),
             Reason::OutOfScope,
@@ -692,7 +693,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         ),
 
         TypeDefKind::Resource | TypeDefKind::Handle(_) => rep.reject(
-            "E-RESOURCE",
+            codes::RESOURCE,
             shown.clone(),
             site.to_string(),
             Reason::OutOfScope,
@@ -701,7 +702,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         ),
 
         TypeDefKind::Future(_) | TypeDefKind::Stream(_) => rep.reject(
-            "E-ASYNC",
+            codes::ASYNC,
             shown.clone(),
             site.to_string(),
             Reason::OutOfScope,
@@ -710,7 +711,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         ),
 
         TypeDefKind::Unknown => rep.reject(
-            "E-UNKNOWN",
+            codes::UNKNOWN,
             format!("an unresolved type: {shown}"),
             site.to_string(),
             Reason::Malformed,

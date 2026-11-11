@@ -1,6 +1,7 @@
 //! Generate a Rocq interface, a CertiRocq extraction file and canonical-ABI
 //! glue from a WIT world.
 
+pub mod codes;
 pub mod config;
 pub mod emit;
 pub mod measured;

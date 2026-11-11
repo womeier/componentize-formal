@@ -1135,3 +1135,75 @@ fn the_manifest_names_what_the_module_exports() {
     }
     assert_eq!(doc["world"].as_str(), Some("wrapper-world"));
 }
+
+/// A world with `n` parameters of one type, for the flat-limit tests.
+fn arity_world(n: usize, ty: &str) -> String {
+    let params = (0..n)
+        .map(|i| format!("p{i}: {ty}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"package local:demo;
+world wrapper-world {{
+  use certirocq:abi/errors@0.1.0.{{error}};
+  export f: func({params}) -> result<u64, error>;
+}}
+"#
+    )
+}
+
+/// Nine parameters is nothing special: nine applications, nine blocks at an
+/// 8-byte stride above the return area, nothing reused.
+///
+/// The emitter is written for any arity, so the risk here is not that it stops
+/// working at some *n* but that something is sized once and shared -- the
+/// blocks have to be distinct, because the first application captures its
+/// cells by address and the last one can still be reading them
+/// (TODO.md#arity). Nine is far enough past the two the hand-written example
+/// has to catch a stride that is right for the first pair only.
+#[test]
+fn nine_parameters_get_nine_blocks() {
+    let plan = plan_for("arity9", &arity_world(9, "u64"));
+    let want: Vec<Option<(u32, String)>> = (0..9)
+        .map(|i| Some((16 + i * 8, format!("arg_p{i}"))))
+        .collect();
+    let got: Vec<Option<(u32, String)>> = blocks(&plan)
+        .iter()
+        .map(|b| b.map(|(off, local)| (off, local.to_string())))
+        .collect();
+    assert_eq!(got, want, "the return area is 16, then one 8-byte box each");
+    assert_eq!(plan.export.layout.reserve, 16 + 9 * 8);
+
+    let adapter = emit::adapter::adapter(&plan);
+    assert_eq!(
+        adapter.matches("call_indirect").count(),
+        9,
+        "one application per argument, in declaration order"
+    );
+}
+
+/// The flat limit counts slots, not parameters.
+///
+/// `MAX_FLAT_PARAMS` is 16 core values, and a sum takes two of them, so nine
+/// `option<u64>` parameters are past a limit that nine `u64` ones are nowhere
+/// near. The message has to name the slot count: a refusal telling the user
+/// that nine is more than sixteen is one they cannot act on.
+#[test]
+fn the_flat_limit_counts_slots_not_parameters() {
+    plan_for("opt8", &arity_world(8, "option<u64>"));
+
+    let err = refusal("opt9", &arity_world(9, "option<u64>"));
+    assert!(err.contains("E-ARITY-FLAT"), "{err}");
+    assert!(err.contains("9 parameter(s) take 18 flat values"), "{err}");
+}
+
+/// The same limit reached the plain way, so the refusal is not a sum-only
+/// path: seventeen scalars are seventeen slots.
+#[test]
+fn seventeen_scalars_are_past_the_flat_limit() {
+    plan_for("u64-16", &arity_world(16, "u64"));
+
+    let err = refusal("u64-17", &arity_world(17, "u64"));
+    assert!(err.contains("E-ARITY-FLAT"), "{err}");
+    assert!(err.contains("17 parameter(s) take 17 flat values"), "{err}");
+}
