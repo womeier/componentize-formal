@@ -252,7 +252,11 @@ fn lower_sum(sum: &Sum, slots: &[Flat], cells: &Cells, base: Base) -> Conversion
     for (keyword, body) in [("then", &branches[0]), ("else", &branches[1])] {
         writeln!(value, "  ({keyword}").unwrap();
         for line in body.iter() {
-            writeln!(value, "    {line}").unwrap();
+            // A statement can itself be several lines -- a nested sum is
+            // another `if`, built where the field pointing at it is written --
+            // so its continuations are shifted with it. Once per level, which
+            // is what makes a sum three deep read as three `if`s.
+            writeln!(value, "    {}", line.replace('\n', "\n    ")).unwrap();
         }
         value.push_str("  )\n");
     }

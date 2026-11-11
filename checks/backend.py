@@ -32,6 +32,7 @@ conversion in one direction only:
                         apart -- and a `result<u64, bool>` as a *value*,
             flip        where both cases are boxed and the ordinal in the
                         block picks one
+            dig         a sum inside a sum, in both positions
 
 Each case is a world and an `impl.v` and nothing else: the interface, the
 extraction, the adapter and the build rules are generated, and `make` is what
@@ -159,6 +160,18 @@ EXPECTED: dict[str, dict] = {
             ("ok(0)", "ok(err(true))"),
             ("err(true)", "ok(ok(1))"),
             ("err(false)", "ok(ok(0))"),
+        ],
+    },
+    "sum-nested": {
+        "export": "dig",
+        "pins": [("Sum", "param"), ("Sum", "result")],
+        "answers": [
+            ("none", "ok(some(none))"),
+            ("some(none)", "ok(none)"),
+            ("some(some(4))", "ok(some(some(5)))"),
+            # Two discriminants have to hold for the payload to be there, and
+            # the range check runs under both.
+            ("some(some(9223372036854775808))", "err(out-of-range)"),
         ],
     },
     "arity": {

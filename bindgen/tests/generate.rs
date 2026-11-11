@@ -109,6 +109,24 @@ world wrapper-world {
 }
 "#;
 
+/// A sum inside a sum, in both positions.
+const DIG: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export dig: func(x: option<option<u64>>) -> result<option<option<u64>>, error>;
+}
+"#;
+
+/// The two sums that are carried differently, one inside the other, over a
+/// join that widens: `ok` flattens to a discriminant and an `i64`, `err` to a
+/// `bool`, and both cases share the slots.
+const PICK: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export pick: func(x: result<option<u64>, bool>) -> result<result<option<u64>, bool>, error>;
+}
+"#;
+
 /// The same sum in both positions, for whichever of the four spellings is
 /// being asked about.
 fn sums_world(ty: &str) -> String {
@@ -346,6 +364,113 @@ fn an_option_parameter_is_a_discriminant_and_a_payload() {
     assert!(
         adapter.contains(r#"(func (export "maybe") (param $x_f0 i32) (param $x_f1 i64)"#),
         "{adapter}"
+    );
+}
+
+/// Nesting is the same code applied again, and these are the numbers that
+/// says: one more flat slot and one more level of cells per level of nesting,
+/// each sum's payload at the offset `wit_parser` gives inside the one above
+/// it. Nothing here is a constant of the generator.
+#[test]
+fn a_sum_inside_a_sum_is_one_more_level() {
+    let plan = plan_for("dig", DIG);
+    let p = &plan.export.params[0];
+    assert_eq!(
+        slots(p),
+        [("x_f0", "i32"), ("x_f1", "i32"), ("x_f2", "i64")],
+        "a discriminant per level, then the payload"
+    );
+    let l = &plan.export.layout;
+    assert_eq!(
+        (l.ret_size, l.payload),
+        (32, 8),
+        "the channel's payload is the outer option, whose own payload is the inner"
+    );
+
+    let adapter = emit::adapter::adapter(&plan);
+    // The lift reaches the `u64` through two blocks, and writes a
+    // discriminant at each level on the way.
+    assert!(
+        adapter.contains(
+            "(i64.store offset=24 (local.get $ret) \
+             (i64.load (i32.load offset=4 (i32.load offset=4 (local.get $val)))))"
+        ),
+        "{adapter}"
+    );
+    // The lowering builds the inner constructor where the outer one's field
+    // is written, so the two blocks do not overlap.
+    assert!(
+        adapter.contains(
+            "(i32.store offset=12 (local.get $arg) (i32.add (local.get $arg) (i32.const 16)))"
+        ),
+        "{adapter}"
+    );
+    assert_eq!(
+        adapter.matches("(if (result i32) (i32.eqz").count(),
+        2,
+        "one `if` per level:\n{adapter}"
+    );
+}
+
+/// Every check on a nested payload runs under *all* the discriminants that
+/// make it live, not just the innermost one. The canonical ABI zero-pads the
+/// slots of a case that was not sent, and a payload two levels down is
+/// reached through two of those choices.
+#[test]
+fn a_nested_check_is_guarded_at_every_level() {
+    let adapter = emit::adapter::adapter(&plan_for("dig", DIG));
+    assert!(
+        adapter.contains(
+            "(if (i32.eq (local.get $x_f0) (i32.const 1))\n      \
+             (then\n        \
+             (if (i32.eq (local.get $x_f1) (i32.const 1))\n          \
+             (then\n            \
+             (if (i64.lt_s (local.get $x_f2) (i64.const 0))"
+        ),
+        "{adapter}"
+    );
+    // The inner discriminant is bounded under the outer one as well: 2 or more
+    // names neither case, but only once there is an inner sum at all.
+    assert!(
+        adapter.contains(
+            "(if (i32.eq (local.get $x_f0) (i32.const 1))\n      \
+             (then\n        \
+             (if (i32.ge_u (local.get $x_f1) (i32.const 2))\n          \
+             (then unreachable))))"
+        ),
+        "{adapter}"
+    );
+}
+
+/// The canonical ABI's join only widens, and a case whose payload is narrower
+/// than the slot it shares reads it back out of the low half. Two sums nested
+/// the other way round from `dig`: the `bool` shares a slot with the inner
+/// discriminant, and the `u64` is the one that forced a slot of its own.
+#[test]
+fn a_narrower_case_reads_its_slot_back_down() {
+    let plan = plan_for("pick", PICK);
+    assert_eq!(
+        slots(&plan.export.params[0]),
+        [("x_f0", "i32"), ("x_f1", "i32"), ("x_f2", "i64")]
+    );
+    let adapter = emit::adapter::adapter(&plan);
+    // The `bool` half reads slot 1 as an i32 -- no `i32.wrap_i64`, because
+    // the join of two i32s is an i32 and the `u64` went to slot 2.
+    assert!(
+        adapter.contains("(i32.ne (local.get $x_f1) (i32.const 0))"),
+        "{adapter}"
+    );
+    assert!(
+        !adapter.contains("i32.wrap_i64"),
+        "nothing here needs narrowing:\n{adapter}"
+    );
+
+    // And the flat one does, which is what says the cast follows the join
+    // rather than the type: there the `bool` shares its slot with the `u64`.
+    let flat = emit::adapter::adapter(&plan_for("both", &sums_world("result<u64, bool>")));
+    assert!(
+        flat.contains("(i32.ne (i32.wrap_i64 (local.get $x_f1)) (i32.const 0))"),
+        "{flat}"
     );
 }
 

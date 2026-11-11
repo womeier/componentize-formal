@@ -1,0 +1,11 @@
+package local:ok;
+
+// A sum inside a sum, in both positions. Nothing about the emitters is
+// special-cased for it: the flattening, the heap cells, the range check's
+// guards and the discriminant traps are each recursive, so what bounds the
+// nesting is the canonical ABI's own flattening -- which the plan cross-checks
+// against `wit_parser`'s.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export dig: func(x: option<option<u64>>) -> result<option<option<u64>>, error>;
+}

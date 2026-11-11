@@ -1,0 +1,11 @@
+package local:ok;
+
+// The two sums that are carried differently, one inside the other, with a
+// join that widens: `ok` flattens to a discriminant and an `i64`, `err` to a
+// `bool`, and the canonical ABI gives both cases the same slots -- so the
+// `bool` arrives in the slot the inner discriminant shares and is read out of
+// its low half.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export pick: func(x: result<option<u64>, bool>) -> result<result<option<u64>, bool>, error>;
+}

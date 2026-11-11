@@ -300,7 +300,6 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
             resolve,
             p.ty,
             Pos::Param,
-            0,
             &format!("export {name}: param `{}`", p.name),
             rep,
         );
@@ -328,7 +327,6 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
                     resolve,
                     ok,
                     Pos::Result,
-                    0,
                     &format!("export {name}: result"),
                     rep,
                 );
@@ -342,10 +340,10 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
             match payloads(resolve, result) {
                 Some(payloads) => {
                     for ty in payloads {
-                        walk(resolve, ty, Pos::Result, 1, &site, rep);
+                        walk(resolve, ty, Pos::Result, &site, rep);
                     }
                 }
-                None => walk(resolve, result, Pos::Result, 0, &site, rep),
+                None => walk(resolve, result, Pos::Result, &site, rep),
             }
             let listed = failures
                 .iter()
@@ -518,12 +516,11 @@ fn show(resolve: &Resolve, ty: Type) -> String {
 
 /// Walk a type, rejecting anything we cannot lift or lower.
 ///
-/// `depth` counts the type formers entered: zero is the parameter or result
-/// itself, one is the payload of a sum, and so on. It is what decides how
-/// deeply an `option` may be nested (TODO.md#option-result) -- the only
-/// question here whose answer depends on where a type sits rather than on what
-/// it is.
-fn walk(resolve: &Resolve, ty: Type, pos: Pos, depth: usize, site: &str, rep: &mut Report) {
+/// Every answer here is a property of the type and of `pos`, never of how
+/// deeply it sits: a sum carries a sum, and a `u32` is refused wherever it
+/// appears. Nothing counts levels, so nothing can accept at one depth what it
+/// refuses at another.
+fn walk(resolve: &Resolve, ty: Type, pos: Pos, site: &str, rep: &mut Report) {
     match ty {
         // Integers are carried by Rocq's primitive 63-bit ints, and u64 is the
         // only width wired up so far.
@@ -596,7 +593,7 @@ fn walk(resolve: &Resolve, ty: Type, pos: Pos, depth: usize, site: &str, rep: &m
             "async",
             "part of the async ABI",
         ),
-        Type::Id(id) => walk_id(resolve, id, pos, depth, site, rep),
+        Type::Id(id) => walk_id(resolve, id, pos, site, rep),
     }
 }
 
@@ -610,12 +607,12 @@ fn describe(def: &wit_parser::TypeDef) -> String {
     }
 }
 
-fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, depth: usize, site: &str, rep: &mut Report) {
+fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report) {
     let def = &resolve.types[id];
     let shown = describe(def);
 
     match &def.kind {
-        TypeDefKind::Type(inner) => walk(resolve, *inner, pos, depth, site, rep),
+        TypeDefKind::Type(inner) => walk(resolve, *inner, pos, site, rep),
 
         // All-nullary inductive: the tagged immediate 2*ord+1 on our side, a
         // discriminant on theirs. Cheapest structured type there is.
@@ -628,18 +625,11 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, depth: usize, site: &str, re
         // and the ordinals are known rather than derived
         // (TODO.md#option-result).
         //
-        // One inside another is the same lift and lower applied again, and is
-        // the next step rather than a different one.
-        TypeDefKind::Option(_) | TypeDefKind::Result(_) if depth > 0 => rep.reject(
-            "E-OPTION-NESTED",
-            shown.clone(),
-            site.to_string(),
-            Reason::Planned(2),
-            "option-result",
-            "a sum inside another sum is not carried yet; one at the top of a parameter \
-             or of the ok half is",
-        ),
-        TypeDefKind::Option(inner) => walk(resolve, *inner, pos, depth + 1, site, rep),
+        // One inside another is the same lift and lower applied again, at any
+        // depth: the emitters recurse, and what bounds them is the canonical
+        // ABI's own flattening, which the plan cross-checks against
+        // `wit_parser`'s.
+        TypeDefKind::Option(inner) => walk(resolve, *inner, pos, site, rep),
         // A `result` with a payload in neither case carries no value at all,
         // and there is no Stdlib sum to carry it in: two payload-less
         // constructors is an `enum`, and the obvious candidate -- `bool` -- is
@@ -656,7 +646,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, depth: usize, site: &str, re
         ),
         TypeDefKind::Result(r) => {
             for ty in r.ok.into_iter().chain(r.err) {
-                walk(resolve, ty, pos, depth + 1, site, rep);
+                walk(resolve, ty, pos, site, rep);
             }
         }
 

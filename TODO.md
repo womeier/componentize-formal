@@ -26,7 +26,6 @@ section.
 | --- | --- | --- |
 | `E-ARITY-0`, `E-NO-RESULT` | exports with no parameters, or no result | [planned, phase 2](#arity) |
 | `E-MULTI-EXPORT` | more than one exported function | [planned, phase 2](#multi-export) |
-| `E-OPTION-NESTED` | a sum inside another sum | [planned, phase 2](#option-result) |
 | `E-OPTION-UNIT` | `result` with a payload in neither case | [rejected outright](#option-result) |
 | `E-STRUCTURED` | `record`, `tuple`, `variant` | [planned, phase 3](#structured-types) |
 | `E-INT-WIDTH` | `u8`, `u16`, `u32` | [wanted, not scheduled](#integer-widths) |
@@ -328,7 +327,9 @@ emitted.
 | `is-green`, `colour-of` | nullary ordinals being the declaration index — first case, a middle one, the last | runs |
 | `sub` on two `u64` | one application per argument, in declaration order ([#arity](#arity)) | runs |
 | any of them with the heap capped at the module's declared minimum | the out-of-memory channel firing on the real allocator, not on a poisoned bump pointer | runs |
-| a function returning `None`, and one returning `Some` | `option`'s per-class ordinals | with [`option`](#option-result) |
+| `unwrap-or`, `halve` | `option`'s two kinds of case in one type — the immediate `None` and the boxed `Some` — one position each | runs |
+| `flip` on a `result<u64, bool>` | `inl` and `inr`, the ordinals a swap upstream would exchange, mapped both ways in one call | runs |
+| `dig` on an `option<option<u64>>` | a sum inside a sum: the inner constructor built where the outer one's field is written, the payload lifted through two blocks | runs |
 | one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged | with the reset |
 | two and three exports | `MkExports` field offsets | with [several exports](#multi-export) |
 | `f64` round-trip | the boxed float | with `wasm-prim-floats` (phase 4) |
@@ -636,13 +637,14 @@ get its closure and proceeds as the one-export case does. A Rocq tuple would
 walk instead of a flat index. `n = 1` skips the wrapper, keeping the generated
 adapter comparable to the hand-written `plus1` one.
 
-### <a id="option-result"></a>`option` and `result` as values — `E-OPTION-NESTED`, `E-OPTION-UNIT`
+### <a id="option-result"></a>`option` and `result` as values — `E-OPTION-UNIT`
 
 The outermost `result<T, error>` of an export is [the failure
 channel](#failure-channel). An `option` or `result` anywhere else is an
-ordinary value, and **one of them per position is carried** — in a parameter,
-or in the ok half of the channel. What is left is the nesting:
-`option<option<u64>>` is `E-OPTION-NESTED`.
+ordinary value, and **both are carried, to any depth** — in a parameter, or in
+the ok half of the channel. Nothing in the gate counts levels, and nothing in
+the emitters special-cases a nested one: the flattening, the heap cells, the
+range checks' guards and the discriminant traps are each recursive.
 
 This is much cheaper than the general [structured-type](#structured-types)
 work, because the shapes are fixed and the ordinals are known rather than
@@ -685,7 +687,12 @@ merely unexpected, so it traps.
 Lowering is guarded the other way round. The canonical ABI zero-pads the flat
 slots of the case that was *not* sent, so a `u64` payload's range check runs
 under the discriminant that makes the payload live — a failure concluded from
-padding would be invented.
+padding would be invented. Nested, that is *every* discriminant on the way
+down, not only the innermost one.
+
+What bounds the nesting is the canonical ABI's own flattening rather than a
+number here, and the plan cross-checks its flattening against `wit_parser`'s
+before emitting anything.
 
 ### <a id="structured-types"></a>Records, tuples and variants — `E-STRUCTURED`, phase 3
 

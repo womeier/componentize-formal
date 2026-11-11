@@ -1,0 +1,10 @@
+package local:bad;
+
+// The payload-less `result` is refused wherever it sits, which is the point of
+// this one being nested: the gate answers by what the type is and not by how
+// deeply it sits, so there is no depth at which a value with nothing in it
+// becomes carriable.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export ping: func(x: option<result>) -> result<u64, error>;
+}

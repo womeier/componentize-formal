@@ -1,0 +1,15 @@
+package local:backend;
+
+// A sum inside a sum, in both positions. Two levels is where the recursion in
+// the emitters stops being a claim: the lowering builds the inner constructor
+// where the outer one's field is written, and the lift reaches the payload
+// through two blocks.
+//
+// The three shapes an `option<option<u64>>` has are permuted rather than
+// mapped through, so no confusion between them survives: `none` and
+// `some(none)` are different answers, which a lift that lost a level would
+// make the same.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export dig: func(x: option<option<u64>>) -> result<option<option<u64>>, error>;
+}

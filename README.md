@@ -132,7 +132,7 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `enum` | **supported** | all-nullary inductive, `2*ord+1` |
 | `result<T, error>` as the result | **required** | the [failure channel](TODO.md#failure-channel), on every export |
 | type aliases | **supported** | looked through |
-| `option<T>`, `result<T, E>` as a value | **supported** | one per position: Rocq's `option` or `sum`, the case mapping written into `interface.v`; [one inside another](TODO.md#option-result) is not carried yet |
+| `option<T>`, `result<T, E>` as a value | **supported** | Rocq's `option` or `sum`, nested to any depth, with the [case mapping](TODO.md#option-result) written into `interface.v`; a `result` with a payload in neither case is refused |
 | `record`, `tuple` | [not supported](TODO.md#structured-types) | needs split ordinal mapping + canonical-ABI layout; [`examples/record`](examples/record) is the hand-written target, and it runs |
 | `variant` | [not supported](TODO.md#structured-types) | same machinery; [`examples/variant`](examples/variant) is the hand-written target, and it runs |
 | `s8`, `s16`, `s32`, `s64` | [not supported](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
