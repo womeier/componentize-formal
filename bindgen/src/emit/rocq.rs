@@ -121,12 +121,20 @@ fn failures(plan: &Plan) -> String {
 }
 
 /// `f : int -> int`, the Rocq side of the export.
+///
+/// One arrow per WIT parameter, in declaration order. Curried rather than a
+/// tuple because that is what the compiled term is: the adapter applies the
+/// arguments one at a time (TODO.md#arity), so a `Module Type` promising
+/// `int * int -> int` would type-check against an implementation the adapter
+/// cannot call.
 fn rocq_signature(plan: &Plan) -> String {
-    format!(
-        "{} -> {}",
-        plan.export.param.repr.rocq_type(),
-        plan.export.ok.rocq_type()
-    )
+    plan.export
+        .params
+        .iter()
+        .map(|p| p.repr.rocq_type())
+        .chain([plan.export.ok.rocq_type()])
+        .collect::<Vec<_>>()
+        .join(" -> ")
 }
 
 /// `result<u64, error>`, as the world writes the return type.
@@ -141,8 +149,11 @@ fn show_result(plan: &Plan) -> String {
 impl Plan {
     /// Does any carried type need Rocq's primitive integers?
     fn uses_int63(&self) -> bool {
-        [&self.export.param.repr, &self.export.ok]
+        self.export
+            .params
             .iter()
-            .any(|r| **r == Repr::Int63)
+            .map(|p| &p.repr)
+            .chain([&self.export.ok])
+            .any(|r| *r == Repr::Int63)
     }
 }

@@ -75,6 +75,22 @@ world wrapper-world {
 }
 "#;
 
+const MINUS: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export minus: func(a: u64, b: u64) -> result<u64, error>;
+}
+"#;
+
+/// Mixed boxing, to pin that the boxes are numbered over the *boxed*
+/// parameters rather than over all of them.
+const MIXED: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export pick: func(which: bool, val: u64) -> result<u64, error>;
+}
+"#;
+
 /// `result<u64, error>` is 16 bytes at align 8, discriminant at 0 and payload
 /// at 8 -- and the adapter reserves the 16, rounded up, plus 8 for the boxed
 /// argument. These are the numbers the hand-written plus1 adapter contains.
@@ -84,9 +100,20 @@ fn a_u64_result_is_sixteen_bytes_at_align_eight() {
     let l = &plan.export.layout;
     assert_eq!((l.ret_size, l.ret_align, l.payload), (16, 8, 8));
     assert_eq!(l.reserve, 24, "16 for the return area, 8 for the boxed int");
-    assert_eq!(l.arg, Some(16), "the argument sits above the return area");
-    assert_eq!(plan.export.param.wasm, "i64");
-    assert_eq!(plan.export.param.repr, Repr::Int63);
+    let p = &plan.export.params[0];
+    assert_eq!(
+        p.box_offset,
+        Some(16),
+        "the argument sits above the return area"
+    );
+    assert_eq!(p.wasm, "i64");
+    assert_eq!(p.repr, Repr::Int63);
+    assert_eq!(
+        p.box_local.as_deref(),
+        Some("arg"),
+        "one parameter, so the box local is the `$arg` the hand-written plus1 \
+         adapter uses"
+    );
 }
 
 /// `result<bool, error>` is 2 bytes at align 1, so the payload is at offset 1
@@ -98,8 +125,69 @@ fn a_bool_result_is_two_bytes_at_align_one() {
     let l = &plan.export.layout;
     assert_eq!((l.ret_size, l.ret_align, l.payload), (2, 1, 1));
     assert_eq!(l.reserve, 8, "rounded up: mem_ptr has to stay 4-aligned");
-    assert_eq!(l.arg, None, "an immediate needs no heap");
-    assert_eq!(plan.export.param.wasm, "i32");
+    let p = &plan.export.params[0];
+    assert_eq!(p.box_offset, None, "an immediate needs no heap");
+    assert_eq!(p.box_local, None);
+    assert_eq!(p.wasm, "i32");
+}
+
+/// Every boxed parameter gets its own box, all of them live at once: the first
+/// application captures its box by address and the last application can still
+/// be reading it, so they may not overlap or be reused. These are the offsets
+/// the hand-written `examples/minus` adapter contains.
+#[test]
+fn each_boxed_parameter_gets_its_own_box() {
+    let plan = plan_for("minus", MINUS);
+    let l = &plan.export.layout;
+    assert_eq!(
+        l.reserve, 32,
+        "16 for the return area, then 8 per boxed argument"
+    );
+    let offsets: Vec<_> = plan.export.params.iter().map(|p| p.box_offset).collect();
+    assert_eq!(offsets, [Some(16), Some(24)]);
+    let locals: Vec<_> = plan
+        .export
+        .params
+        .iter()
+        .map(|p| p.box_local.clone())
+        .collect();
+    assert_eq!(
+        locals,
+        [Some("arg_a".to_string()), Some("arg_b".to_string())],
+        "with several parameters each box is named after its own"
+    );
+}
+
+/// An immediate parameter takes no box, so the boxes are numbered over the
+/// boxed parameters and not over the parameter list. Getting this wrong would
+/// leave `val`'s box at the offset nothing reserved.
+#[test]
+fn an_immediate_parameter_takes_no_box() {
+    let plan = plan_for("pick", MIXED);
+    let l = &plan.export.layout;
+    assert_eq!(l.reserve, 24, "16 for the return area, 8 for the one box");
+    let offsets: Vec<_> = plan.export.params.iter().map(|p| p.box_offset).collect();
+    assert_eq!(offsets, [None, Some(16)]);
+    let locals: Vec<_> = plan
+        .export
+        .params
+        .iter()
+        .map(|p| p.box_local.clone())
+        .collect();
+    assert_eq!(locals, [None, Some("arg_val".to_string())]);
+}
+
+/// The Module Type is curried, one arrow per parameter, because that is what
+/// the compiled term is: the adapter applies the arguments one at a time. A
+/// tuple would type-check against an implementation the adapter cannot call.
+#[test]
+fn several_parameters_are_curried_in_the_interface() {
+    let plan = plan_for("minus", MINUS);
+    let interface = emit::rocq::interface(&plan);
+    assert!(
+        interface.contains("Parameter minus : int -> int -> int."),
+        "{interface}"
+    );
 }
 
 /// Out of range is only a failure for a type that has values the other side
@@ -118,6 +206,39 @@ fn only_a_narrowing_parameter_gets_a_range_check() {
     assert_eq!(negb.export.failures.len(), 1, "only out of memory");
 }
 
+/// Every parameter that can be out of range gets its own check, and there is
+/// one application per parameter. The count is what matters: a loop that
+/// emitted the check or the call once would still produce a module that
+/// assembles and answers -- wrongly, for the arguments it skipped.
+#[test]
+fn every_parameter_is_checked_and_applied() {
+    let adapter = emit::adapter::adapter(&plan_for("minus", MINUS));
+    assert_eq!(
+        adapter.matches("(i64.lt_s (local.get").count(),
+        2,
+        "one range check per u64 parameter:\n{adapter}"
+    );
+    assert_eq!(
+        adapter.matches("(call_indirect (type $closure)").count(),
+        2,
+        "one application per parameter:\n{adapter}"
+    );
+    assert_eq!(
+        adapter.matches("(if (global.get $out_of_mem)").count(),
+        3,
+        "main_function, then one per application:\n{adapter}"
+    );
+    // The partial application is read back out of `result`, once per
+    // application but not after the last: that one holds the answer.
+    assert_eq!(
+        adapter
+            .matches("(local.set $closure (global.get $result))")
+            .count(),
+        2,
+        "after main_function, and between the two applications:\n{adapter}"
+    );
+}
+
 /// An enum becomes an inductive whose constructors are in the world's case
 /// order, because that order is the discriminant on one side and the ordinal
 /// on the other.
@@ -129,15 +250,15 @@ fn an_enum_becomes_an_inductive_in_declaration_order() {
     assert_eq!(ind.constructors, ["red", "green", "blue"]);
     assert_eq!(ind.wit_declaration(), "enum colour { red, green, blue }");
 
-    let Repr::Enum { cases, .. } = &plan.export.param.repr else {
+    let Repr::Enum { cases, .. } = &plan.export.params[0].repr else {
         panic!("a colour parameter is an enum");
     };
     assert_eq!(*cases, 3);
     assert!(
-        plan.export.param.repr.tags_are_the_formula(),
+        plan.export.params[0].repr.tags_are_the_formula(),
         "the generator wrote the inductive, so ordinal == discriminant"
     );
-    assert_eq!(plan.export.param.repr.tags(), [1, 3, 5]);
+    assert_eq!(plan.export.params[0].repr.tags(), [1, 3, 5]);
 }
 
 /// `bool`'s immediates are the formula too, but for the other reason: the
@@ -282,4 +403,91 @@ fn the_error_package_is_vendored_beside_the_world() {
     );
     assert_eq!(artifact.overwrite, emit::Overwrite::IfMissing);
     assert_eq!(artifact.contents, componentize_formal::ABI_WIT);
+}
+
+/// The round-trip harness is for `checks/roundtrip.py` and nothing else. If it
+/// ever appeared in `artifacts`, `generate` would write a module into the
+/// user's project that their component does not need and their Makefile would
+/// not know what to do with.
+#[test]
+fn the_roundtrip_harness_is_not_part_of_a_build() {
+    let plan = plan_for("plus1", PLUS1);
+    let (module, _) = emit::roundtrip::module(&plan);
+    assert!(!module.is_empty());
+    assert!(
+        emit::artifacts(&plan)
+            .iter()
+            .all(|a| !a.contents.contains("canonical_int")),
+        "the harness leaked into the files a component build writes"
+    );
+}
+
+/// One pair per *representation*, not per position: `next` takes a `colour`
+/// and returns one, and round-tripping the same conversion twice says nothing
+/// the first run did not.
+#[test]
+fn a_representation_is_round_tripped_once() {
+    let (_, pairs) = emit::roundtrip::module(&plan_for("colour", COLOUR));
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0].rocq_type, "colour");
+
+    // Mixed boxing is two representations in one world, and both are run.
+    let (_, pairs) = emit::roundtrip::module(&plan_for("mixed", MIXED));
+    let types: Vec<&str> = pairs.iter().map(|p| p.rocq_type.as_str()).collect();
+    assert_eq!(types, ["bool", "int"]);
+}
+
+/// Both orders, for every pair: the harness is the only place the Rocq-side
+/// direction runs, which is the half an import wrapper will be built on.
+#[test]
+fn every_pair_is_exported_in_both_orders() {
+    let (module, pairs) = emit::roundtrip::module(&plan_for("mixed", MIXED));
+    for pair in &pairs {
+        for name in [&pair.canonical, &pair.rocq] {
+            assert!(
+                module.contains(&format!("(export \"{name}\")")),
+                "{name} is in the manifest but not in the module:\n{module}"
+            );
+        }
+        assert!(!pair.canonical_values.is_empty());
+        assert_eq!(pair.canonical_values.len(), pair.rocq_values.len());
+    }
+}
+
+/// The values an immediate is run with are `2*ord+1` of the canonical ones,
+/// and the ends of `Uint63.int`'s range are among a boxed int's. The check
+/// restates both; this is the same statement where a failure is cheap to read.
+#[test]
+fn the_values_are_the_ones_a_conversion_goes_wrong_on() {
+    let (_, pairs) = emit::roundtrip::module(&plan_for("colour", COLOUR));
+    assert_eq!(pairs[0].canonical_values, ["0", "1", "2"]);
+    assert_eq!(pairs[0].rocq_values, ["1", "3", "5"]);
+
+    let (_, pairs) = emit::roundtrip::module(&plan_for("plus1", PLUS1));
+    let values = &pairs[0].canonical_values;
+    assert!(values.contains(&"0".to_string()));
+    assert!(values.contains(&"9223372036854775807".to_string()));
+    assert!(
+        values.iter().all(|v| v.parse::<u64>().unwrap() < 1 << 63),
+        "2**63 has no Uint63.int, so the conversion is not what runs on it"
+    );
+    // The payload is the same number on both sides.
+    assert_eq!(&pairs[0].rocq_values, values);
+}
+
+/// The manifest is what the check reads, so it has to parse as TOML and name
+/// the exports the module has.
+#[test]
+fn the_manifest_names_what_the_module_exports() {
+    let plan = plan_for("mixed", MIXED);
+    let (module, pairs) = emit::roundtrip::module(&plan);
+    let doc: toml::Value = toml::from_str(&emit::roundtrip::manifest(&plan, &pairs))
+        .expect("the manifest parses as TOML");
+    let listed = doc["pair"].as_array().expect("an array of pairs");
+    assert_eq!(listed.len(), pairs.len());
+    for pair in listed {
+        let name = pair["canonical"].as_str().unwrap();
+        assert!(module.contains(name), "{name} is not in the module");
+    }
+    assert_eq!(doc["world"].as_str(), Some("wrapper-world"));
 }

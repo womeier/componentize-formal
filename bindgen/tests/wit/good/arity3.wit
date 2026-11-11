@@ -1,0 +1,10 @@
+package local:good;
+
+// Three parameters, with the immediate one in the middle: the argument boxes
+// are numbered over the *boxed* parameters, so a world where those are not the
+// first ones catches an emitter counting over all of them instead.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum colour { red, green, blue }
+  export blend: func(a: u64, pick: bool, b: u64) -> result<colour, error>;
+}

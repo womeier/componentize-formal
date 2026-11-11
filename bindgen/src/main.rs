@@ -36,6 +36,23 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Write the conversion round-trip harness, for `checks/roundtrip.py`.
+    ///
+    /// Not part of a component build: `generate` never writes this, and a
+    /// component never contains it. It is a module that composes each of the
+    /// conversions in `bindgen/src/emit/convert.rs` in both orders, so that
+    /// the direction an export adapter never exercises -- the one an import
+    /// wrapper will need (TODO.md#imports) -- is run anyway.
+    Roundtrip {
+        #[command(flatten)]
+        input: Input,
+        /// Where to write the harness module. Defaults to stdout.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// Where to write the manifest of what to call in it.
+        #[arg(long, value_name = "PATH")]
+        manifest: Option<PathBuf>,
+    },
 }
 
 #[derive(Args)]
@@ -92,6 +109,11 @@ fn run() -> Result<ExitCode> {
     match &cli.cmd {
         Cmd::Check(input) => check(input),
         Cmd::Generate { input, force } => generate(input, *force),
+        Cmd::Roundtrip {
+            input,
+            out,
+            manifest,
+        } => roundtrip(input, out.as_deref(), manifest.as_deref()),
     }
 }
 
@@ -115,6 +137,52 @@ fn check(input: &Input) -> Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
     println!("ok: world `{}` is within the supported subset", w.name());
+    Ok(ExitCode::SUCCESS)
+}
+
+fn roundtrip(input: &Input, out: Option<&Path>, manifest: Option<&Path>) -> Result<ExitCode> {
+    let w = World::load(input)?;
+    let report = w.gate();
+
+    // The same gate, for the same reason `generate` runs it: a world outside
+    // the subset has representations the conversions were not written for, and
+    // round-tripping one would report on code that will never be emitted.
+    if !report.is_ok() {
+        for rejection in &report.rejections {
+            eprintln!("{rejection}");
+        }
+        bail!(
+            "world `{}` is outside the supported subset; no harness generated",
+            w.name()
+        );
+    }
+    // Warnings are about what the adapter has to guard at runtime -- a range
+    // check, say. The harness has no adapter and makes no answer, so they say
+    // nothing here and are not repeated.
+
+    // Only the Makefile reads this, and the harness has none.
+    let wit_dir = w.wit_dir()?.display().to_string();
+    let plan = emit::Plan::new(&w.resolve, w.world, &w.cfg, &wit_dir)?;
+    let (module, pairs) = emit::roundtrip::module(&plan);
+
+    // Nothing is written until both are in hand: a manifest naming exports a
+    // module does not have would send the check looking for them.
+    let doc = emit::roundtrip::manifest(&plan, &pairs);
+    match out {
+        Some(path) => {
+            std::fs::write(path, &module).with_context(|| format!("writing {}", path.display()))?;
+            eprintln!(
+                "  {}  {} conversion pair(s), both ways",
+                path.display(),
+                pairs.len()
+            );
+        }
+        None => print!("{module}"),
+    }
+    if let Some(path) = manifest {
+        std::fs::write(path, &doc).with_context(|| format!("writing {}", path.display()))?;
+        eprintln!("  {}  what to call in it, and with what", path.display());
+    }
     Ok(ExitCode::SUCCESS)
 }
 

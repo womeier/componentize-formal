@@ -24,7 +24,7 @@ section.
 
 | Code | Construct | Status |
 | --- | --- | --- |
-| `E-ARITY-0`, `E-ARITY-N`, `E-NO-RESULT` | exports that aren't one-in-one-out | [planned, phase 2](#arity) |
+| `E-ARITY-0`, `E-NO-RESULT` | exports with no parameters, or no result | [planned, phase 2](#arity) |
 | `E-MULTI-EXPORT` | more than one exported function | [planned, phase 2](#multi-export) |
 | `E-OPTION` | `option`/`result` as a parameter or nested | [planned, phase 2](#option-result) |
 | `E-STRUCTURED` | `record`, `tuple`, `variant` | [planned, phase 3](#structured-types) |
@@ -289,6 +289,24 @@ under `examples/` has an `enum` parameter: the two that exist take a `u64` and a
 is not a check, and `checks.generated` only parses the adapter it generates for
 the `enum` fixtures. A third example closes it.
 
+**1e — the conversions are inverses.** `checks.roundtrip`
+([`checks/roundtrip.py`](checks/roundtrip.py)) takes the pair of conversions
+each representation has — canonical ABI to CertiRocq's value and back, both
+out of [`bindgen/src/emit/convert.rs`](bindgen/src/emit/convert.rs) — composes
+them in both orders in a module of its own, and runs every order on every
+value under `wasmtime`, requiring the value back unchanged.
+
+This is narrower than 1c and 1d and catches something neither can. An export
+adapter uses each direction in exactly one position, so a component's answers
+say nothing about the other order — the one a function import will need
+([#imports](#imports)), where the wrapper takes Rocq arguments out and brings
+a host result back in. And because the harness links against nothing, it runs
+the `enum` branch the paragraph above says no example reaches: `enum.wit`'s
+three cases go through `2*ord+1` and back for real, with the Rocq-side values
+recomputed in the check rather than read from the generator. What it still
+does not do is assemble an `enum` component and read an answer out of it, so a
+third example is still what closes 1d.
+
 **2 — the backend's behaviour, phase 1.** The rest needs the module to *run*:
 one case per representation, each a Rocq definition plus a world through the
 whole pipeline — `rocq c`, `wasm-merge`, `component embed`,
@@ -372,7 +390,7 @@ for MetaRocq, the build it existed to protect. It checks what is left ---
 CompCert, and the inputs MetaRocq is built from --- and says in its docstring
 what it gave up.
 
-**It compiles and runs.** All seven checks pass, and every example answers
+**It compiles and runs.** All eight checks pass, and every example answers
 correctly through `make run`: CertiRocq's own module linked to the adapter,
 which could not be assembled at all before the export existed. Two things
 moved with the pin --- the plugin's flags are double-dashed now, `-file`
@@ -533,23 +551,47 @@ Integers are carried by **Rocq's primitive 63-bit unsigned ints**
 representation there, so the generator warns at the position where the
 narrowing happens and the adapter guards rather than truncating.
 
-### <a id="arity"></a>Export shape — `E-ARITY-0`, `E-ARITY-N`, `E-NO-RESULT`, phase 2
+### <a id="arity"></a>Export shape — `E-ARITY-0`, `E-NO-RESULT`, phase 2
 
-Only `func(x: T) -> U` is handled, matching
-`testing/examples/component/plus1`. The three other shapes each need their own
-adapter prologue:
+**Several parameters are supported now.** `E-ARITY-N` is gone, and `func(a: T,
+b: U, ...) -> result<V, error>` goes through. What settled it was a
+measurement, not an argument: the open question had been whether uncurrying
+changes the arity of the closure reachable from `main`'s result, and it does
+not. A compiled `int -> int -> int` has four functions and a table of four,
+and every one of them has the `(env, arg)` closure type, so there is no 2-ary
+core function to call. Iterated application is the only shape there is.
+
+So the adapter applies one argument at a time — a box and a `call_indirect`
+each, with the next closure read out of `glob_result` in between, which is
+what the C glue's `make_call` (`theories/Glue/glue.v:1229`) does.
+[`examples/minus`](examples/minus) is the reference: hand-written, measured,
+answering correctly through `make run` against the real backend and not only
+the stub, and now emitted token for token by the generator. Its README has the
+numbers.
+
+Two things the measurement added to the plan that was written here before it.
+The argument boxes have to be reserved up front and never reused: the first
+application captures the adapter's box *by address*, and a later application
+reads through that pointer, so an adapter that allocated one box per argument
+in turn would compute `b - b`. And the out-of-memory check belongs after
+*every* application, not just the last — a failure in the middle leaves the
+*previous* closure in `glob_result`, and applying the next argument to it is a
+`call_indirect` into a body expecting a different shape. That is a wrong
+answer today and a trap once [structured types](#structured-types) land, where
+a body loads an ordinal and runs `unreachable` on anything else. The flag
+being sticky is what makes this a safety check rather than a reporting one.
+
+**What is left** is the two shapes with nothing to apply or nothing to return,
+each needing its own adapter prologue:
 
 - **No parameters.** A nullary export is a value, not a closure, so
   `main_function` leaves the result itself in `glob_result` and the adapter
   skips `call_indirect` entirely.
-- **Several parameters.** Needs iterated closure application: one
-  `call_indirect` per argument, reading `glob_result` between calls to get the
-  next closure. This is what the C glue's `make_call`
-  (`theories/Glue/glue.v:1229`) does, one argument at a time.
-  **Open risk:** whether uncurrying changes the arity of the closure reachable
-  from `main`'s result. Verify with a real two-argument example before trusting
-  one-argument-at-a-time.
 - **No result.** Nothing to lift, and nowhere to put the out-of-memory signal.
+
+Only *n* = 2 has been run end to end. The emitter is written for any *n* and
+the generated adapter for three parameters parses, but three has not been
+through a real backend.
 
 ### <a id="multi-export"></a>Several exports — `E-MULTI-EXPORT`, phase 2
 
@@ -778,8 +820,28 @@ invariants assume the resulting index layout. Exports-only keeps the existing
 proof intact; a world with imports means reworking `instantiation.v`.
 
 An import also runs the ABI the other way round — the adapter becomes the
-*callee's* caller, lowering Rocq values out and lifting results back in — so it
-needs the lift/lower pair in the mirror direction as well.
+*callee's* caller, lowering Rocq values out and lifting results back in — so
+it needs the lift/lower pair in the mirror direction as well.
+
+**That half is already built, and already run.** It is not extra work waiting
+on the proof: both conversions live in `bindgen/src/emit/convert.rs`, and the
+only difference between an export's glue and an import wrapper's is the order
+they are composed in. An export takes a parameter canonical → Rocq and hands a
+result back Rocq → canonical; a wrapper takes its arguments the second way and
+its answer the first. So `componentize-formal roundtrip` emits a module
+composing each pair in *both* orders and `checks.roundtrip` runs it under
+`wasmtime`, requiring the value back unchanged — over both ends of
+`Uint63.int`'s range, both booleans, and every case of an `enum`. The
+direction no emitted adapter uses is tested before there is anything that uses
+it, which is the part of this item that could otherwise rot unnoticed: the
+gate refuses imports, so nothing else would exercise it.
+
+What is *not* built is where a wrapper's box comes from. Nothing in
+`convert.rs` allocates — a boxed value needs a cell and is handed the address.
+An export reserves every box up front, off the bump pointer, before the
+program runs ([#arity](#arity)); a wrapper is called mid-program with the heap
+in use, and finding a cell there is a question about imports rather than about
+the conversion.
 
 Imported *types*, which is what a `use` statement produces, are already fine:
 they are just names, and the gate lets them through.
@@ -812,7 +874,8 @@ so it resolves each import against the other module's exports and both edges
 disappear --- checked, with that exact pair of stand-in modules: the merge
 succeeds and the only import left is the host function, which is what
 `component new` satisfies from the world's imports. So imports cost
-`instantiation.v` and the mirror-direction lift/lower, not the linking shape.
+`instantiation.v` and a box to put an argument in — not the linking shape,
+and not the mirror-direction lift/lower.
 
 ### <a id="frontends"></a>The Lean frontend
 

@@ -367,6 +367,25 @@
             touch $out
           '';
 
+        # The two conversions in emit/convert.rs, composed both ways and run.
+        # An export adapter uses each direction in one position only; the
+        # other order is what a function import will need
+        # (TODO.md#imports), and nothing in the repository runs it yet. This
+        # does, over every world in the good fixture set.
+        roundtrip = pkgs.runCommand "roundtrip"
+          {
+            nativeBuildInputs = [
+              pkgs.python3
+              pkgs.wasmtime
+            ];
+          } ''
+            python3 ${./checks/roundtrip.py} \
+              --generator ${bindgen}/bin/componentize-formal \
+              --fixtures ${./bindgen/tests/wit/good} \
+              --plan ${./bindgen/src/emit/plan.rs}
+            touch $out
+          '';
+
         # Assembles each example into a component and checks what it answers.
         # Needs no Rocq: the examples link against `stub/`, which stands in for
         # the backend's output, so this runs on every push while

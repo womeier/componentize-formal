@@ -11,16 +11,16 @@ use std::fmt::Write;
 use wit_parser::Int;
 
 use super::plan::{Discriminants, Export, Plan, Repr, ADAPTER_ALIGN};
-use super::{comment, BACKEND_MODULE, MARKER};
+use super::{comment, convert, BACKEND_MODULE, MARKER};
 use crate::repr;
 use crate::repr::exports;
 
 /// Locals the emitted function declares for itself. A parameter named one of
 /// these would be a duplicate name in the wat, so [`super::plan`] refuses it.
+/// `arg` is in the list because it is the box local of a one-parameter export
+/// ([`super::plan::ONE_ARG_LOCAL`]); with several parameters the boxes are
+/// named after them, and [`super::plan`] checks those too.
 pub const LOCALS: &[&str] = &["ret", "arg", "closure"];
-
-/// Where the argument is stored when it has to be boxed.
-const ARG: &str = "$arg";
 
 pub fn adapter(plan: &Plan) -> String {
     let e = &plan.export;
@@ -113,7 +113,7 @@ pub fn adapter(plan: &Plan) -> String {
         "  (func $ok (param $ret i32) (param $val {ty})\n\
          \x20   ({store_tag} (local.get $ret) (i32.const {ok}))\n\
          \x20   ({store} offset={payload} (local.get $ret) (local.get $val)))\n",
-        ty = payload_wasm_type(&e.ok),
+        ty = convert::core_type(&e.ok),
         store_tag = store(l.ret_tag),
         ok = d.ok,
         store = payload_store(&e.ok),
@@ -143,23 +143,37 @@ pub fn adapter(plan: &Plan) -> String {
     .unwrap();
 
     // ---- the export --------------------------------------------------------
+    let params = e
+        .params
+        .iter()
+        .map(|p| format!("(param ${} {})", p.rocq_name, p.wasm))
+        .collect::<Vec<_>>()
+        .join(" ");
     writeln!(
         out,
-        "\n  (func (export \"{}\") (param ${} {}) (result i32)",
-        e.wit_name, e.param.rocq_name, e.param.wasm
+        "\n  (func (export \"{}\") {params} (result i32)",
+        e.wit_name
     )
     .unwrap();
     out.push_str("    (local $ret i32)\n");
-    if l.arg.is_some() {
-        writeln!(out, "    (local {ARG} i32)").unwrap();
+    for p in &e.params {
+        if let Some(local) = &p.box_local {
+            writeln!(out, "    (local ${local} i32)").unwrap();
+        }
     }
     out.push_str("    (local $closure i32)\n");
 
     reserve(&mut out, e);
     if let Some(case) = d.out_of_range {
-        range_check(&mut out, e, case);
+        for p in &e.params {
+            if p.boxed() {
+                range_check(&mut out, p, case);
+            }
+        }
     }
-    validate_param(&mut out, e);
+    for p in &e.params {
+        validate_param(&mut out, p);
+    }
     call(&mut out, e);
     lift(&mut out, e);
 
@@ -167,39 +181,51 @@ pub fn adapter(plan: &Plan) -> String {
     out
 }
 
-/// Take the return area, and the boxed argument if there is one, off the
-/// backend's own bump pointer.
+/// Take the return area, and a box per boxed argument, off the backend's own
+/// bump pointer.
 fn reserve(out: &mut String, e: &Export) {
     let l = &e.layout;
-    out.push('\n');
-    out.push_str(&comment::wat(
-        "    ",
-        &[
-            match l.arg {
-                Some(_) => "The return area and the boxed argument come off the same bump",
-                None => "The return area comes off the same bump",
-            }
-            .to_string(),
-            format!(
-                "pointer the backend allocates from, before `{}` runs,",
-                exports::MAIN_FUNCTION
-            ),
-            "so the heap is still empty and the reservation cannot fail in".into(),
-            "practice.".into(),
+    let boxed = e.params.iter().filter(|p| p.boxed()).count();
+
+    let mut lines = vec![
+        match boxed {
+            0 => "The return area comes off the same bump".to_string(),
+            1 => "The return area and the boxed argument come off the same bump".to_string(),
+            n => format!("The return area and the {n} boxed arguments come off the same bump"),
+        },
+        format!(
+            "pointer the backend allocates from, before `{}` runs,",
+            exports::MAIN_FUNCTION
+        ),
+        "so the heap is still empty and the reservation cannot fail in".into(),
+        "practice.".into(),
+        String::new(),
+    ];
+    // Why it is all taken up front rather than one box reused per argument.
+    if boxed > 1 {
+        lines.extend([
+            "Every box is reserved here and none is reused: applying an".to_string(),
+            "argument captures its box by address, and a later application".into(),
+            "reads back through that pointer (TODO.md#arity).".into(),
             String::new(),
-            format!("{ADAPTER_ALIGN}-aligned because the host rejects a misaligned return area,"),
-            format!(
-                "and `{}` is only {}-aligned in general (repr.rs:",
-                exports::MEM_PTR,
-                repr::CELL
-            ),
-            format!(
-                "{}-byte cells); reserving a multiple of {ADAPTER_ALIGN} leaves it where the",
-                repr::CELL
-            ),
-            "backend wants it again.".into(),
-        ],
-    ));
+        ]);
+    }
+    lines.extend([
+        format!("{ADAPTER_ALIGN}-aligned because the host rejects a misaligned return area,"),
+        format!(
+            "and `{}` is only {}-aligned in general (repr.rs:",
+            exports::MEM_PTR,
+            repr::CELL
+        ),
+        format!(
+            "{}-byte cells); reserving a multiple of {ADAPTER_ALIGN} leaves it where the",
+            repr::CELL
+        ),
+        "backend wants it again.".into(),
+    ]);
+
+    out.push('\n');
+    out.push_str(&comment::wat("    ", &lines));
     writeln!(
         out,
         "    (global.set $mem_ptr\n\
@@ -209,12 +235,14 @@ fn reserve(out: &mut String, e: &Export) {
     )
     .unwrap();
     out.push_str("    (local.set $ret (global.get $mem_ptr))\n");
-    if let Some(arg) = l.arg {
-        writeln!(
-            out,
-            "    (local.set {ARG} (i32.add (local.get $ret) (i32.const {arg})))"
-        )
-        .unwrap();
+    for p in &e.params {
+        if let (Some(local), Some(offset)) = (&p.box_local, p.box_offset) {
+            writeln!(
+                out,
+                "    (local.set ${local} (i32.add (local.get $ret) (i32.const {offset})))"
+            )
+            .unwrap();
+        }
     }
     writeln!(
         out,
@@ -241,15 +269,20 @@ fn reserve(out: &mut String, e: &Export) {
 }
 
 /// A `u64` of 2^63 or more has no `Uint63.int`.
-fn range_check(out: &mut String, e: &Export, case: u32) {
-    let p = &e.param.rocq_name;
+///
+/// One check per parameter that can carry one. No parameter is exempt and one
+/// of them being in range says nothing about the others, so they are not
+/// folded together -- and all of them run before `main_function`, so a
+/// rejected call has not allocated anything.
+fn range_check(out: &mut String, param: &super::plan::Param, case: u32) {
+    let p = &param.rocq_name;
     out.push('\n');
     out.push_str(&comment::wat(
         "    ",
         &[
-            "A `u64` of 2^63 or more has no `Uint63.int`, so it is rejected",
-            "before the program runs rather than silently losing its top bit.",
-            "Read as an i64 that is exactly the negative half.",
+            format!("`{p}` as a `u64` of 2^63 or more has no `Uint63.int`, so it is"),
+            "rejected before the program runs rather than silently losing its".into(),
+            "top bit. Read as an i64 that is exactly the negative half.".into(),
         ],
     ));
     write!(
@@ -263,9 +296,9 @@ fn range_check(out: &mut String, e: &Export, case: u32) {
 }
 
 /// Hold the incoming value to what its WIT type promises.
-fn validate_param(out: &mut String, e: &Export) {
-    let p = &e.param.rocq_name;
-    match &e.param.repr {
+fn validate_param(out: &mut String, param: &super::plan::Param) {
+    let p = &param.rocq_name;
+    match &param.repr {
         Repr::Enum {
             cases, rocq_type, ..
         } => {
@@ -296,11 +329,18 @@ fn validate_param(out: &mut String, e: &Export) {
     }
 }
 
-/// Run the program, get the closure, apply it, and check the allocator both
-/// times it can have given up.
+/// Run the program, apply the arguments one at a time, and check the allocator
+/// after every step that can have given up.
+///
+/// The loop is the whole of the several-parameter case. A compiled Rocq
+/// function takes one argument per call, so applying argument *i* leaves the
+/// closure for argument *i+1* in `result`, read exactly as the one
+/// `main_function` leaves there. There is no 2-ary core function to call:
+/// every function in the table of a compiled `int -> int -> int` has the
+/// `(env, arg)` type, which `examples/minus` measured (TODO.md#arity).
 fn call(out: &mut String, e: &Export) {
     let d = &e.discriminants;
-    let oom = |out: &mut String, lines: &[&str]| {
+    let oom = |out: &mut String, lines: &[String]| {
         out.push_str(&comment::wat("    ", lines));
         write!(
             out,
@@ -332,67 +372,117 @@ fn call(out: &mut String, e: &Export) {
     oom(
         out,
         &[
-            "`out_of_mem` means the value in `result` was never written, so",
-            "this check is not optional.",
+            "`out_of_mem` means the value in `result` was never written, so".to_string(),
+            "this check is not optional.".into(),
         ],
     );
     out.push_str("    (local.set $closure (global.get $result))\n");
 
-    if e.layout.arg.is_some() {
-        out.push('\n');
-        out.push_str(&comment::wat(
-            "    ",
-            &[
+    let n = e.params.len();
+    for (i, p) in e.params.iter().enumerate() {
+        let last = i + 1 == n;
+
+        // Canonical ABI -> CertiRocq, the direction an export goes. The
+        // prologue is the store into the box, for a representation that has
+        // one; `argument` is what the application is handed.
+        let lowered = convert::to_rocq(
+            &p.repr,
+            &format!("(local.get ${})", p.rocq_name),
+            p.box_local
+                .as_ref()
+                .map(|local| format!("(local.get ${local})"))
+                .as_deref(),
+        );
+        if !lowered.prologue.is_empty() {
+            out.push('\n');
+            let mut lines = vec![];
+            if n > 1 {
+                lines.push(format!("Argument {} of {n}, `{}`.", i + 1, p.wit_name));
+            }
+            lines.extend([
                 format!(
                     "A primitive int is boxed: a pointer to its {}-byte payload,",
                     repr::PRIM_PAYLOAD_SIZE
                 ),
                 "which is what gets passed, not the value. repr.rs".into(),
                 "PRIM_PAYLOAD_SIZE.".into(),
-            ],
-        ));
-        writeln!(
+            ]);
+            out.push_str(&comment::wat("    ", &lines));
+            for line in &lowered.prologue {
+                writeln!(out, "    {line}").unwrap();
+            }
+        }
+
+        out.push('\n');
+        let mut lines = vec![];
+        if i == 0 {
+            lines.extend([
+                format!(
+                    "Closure layout: [tag, func_idx, env_ptr] in {}-byte cells, so the",
+                    repr::CELL
+                ),
+                format!(
+                    "environment is at offset {} and the index at offset {}.",
+                    repr::CLOSURE_ENV_OFFSET,
+                    repr::CLOSURE_FUNC_IDX_OFFSET
+                ),
+                "repr.rs CLOSURE_ENV_OFFSET, CLOSURE_FUNC_IDX_OFFSET.".into(),
+            ]);
+        } else {
+            lines.extend([
+                format!(
+                    "Application {} of {n}, through the closure the one before",
+                    i + 1
+                ),
+                format!(
+                    "it left in `{}`. The same code as the first: a",
+                    exports::RESULT
+                ),
+                "partial application is an ordinary closure.".into(),
+            ]);
+        }
+        out.push_str(&comment::wat("    ", &lines));
+        write!(
             out,
-            "    (i64.store (local.get {ARG}) (local.get ${}))",
-            e.param.rocq_name
+            "    (call_indirect (type $closure)\n\
+             \x20     (i32.load offset={env} (local.get $closure))\n\
+             \x20     {lowered}\n\
+             \x20     (i32.load offset={func} (local.get $closure)))\n\n",
+            env = repr::CLOSURE_ENV_OFFSET,
+            func = repr::CLOSURE_FUNC_IDX_OFFSET,
+            lowered = lowered.value,
         )
         .unwrap();
-    }
 
-    out.push('\n');
-    out.push_str(&comment::wat(
-        "    ",
-        &[
-            format!(
-                "Closure layout: [tag, func_idx, env_ptr] in {}-byte cells, so the",
-                repr::CELL
-            ),
-            format!(
-                "environment is at offset {} and the index at offset {}.",
-                repr::CLOSURE_ENV_OFFSET,
-                repr::CLOSURE_FUNC_IDX_OFFSET
-            ),
-            "repr.rs CLOSURE_ENV_OFFSET, CLOSURE_FUNC_IDX_OFFSET.".into(),
-        ],
-    ));
-    write!(
-        out,
-        "    (call_indirect (type $closure)\n\
-         \x20     (i32.load offset={env} (local.get $closure))\n\
-         \x20     {lowered}\n\
-         \x20     (i32.load offset={func} (local.get $closure)))\n\n",
-        env = repr::CLOSURE_ENV_OFFSET,
-        func = repr::CLOSURE_FUNC_IDX_OFFSET,
-        lowered = lower(e),
-    )
-    .unwrap();
-    oom(
-        out,
-        &[
-            "The call allocated its own result, so this is the second place",
-            "the flag can have been set.",
-        ],
-    );
+        oom(
+            out,
+            &match last {
+                true => vec![
+                    "The call allocated its own result, so this is the last place".to_string(),
+                    "the flag can have been set.".into(),
+                ],
+                // Not "or the failure goes unreported": `out_of_mem` is only
+                // ever set, so the last check would see this too. What this
+                // one prevents is the call below it.
+                false => vec![
+                    "Applying one argument of several allocates -- an environment".to_string(),
+                    format!(
+                        "and the next closure -- so the flag can be set here with `{}`",
+                        exports::RESULT
+                    ),
+                    "still holding the closure from before. Checking now is what".into(),
+                    "stops the next application calling through that stale".into(),
+                    "closure, which expects an argument of the shape this one".into(),
+                    "took: a wrong answer here, a trap once a body matches on an".into(),
+                    "ordinal (TODO.md#structured-types).".into(),
+                ],
+            },
+        );
+
+        if !last {
+            out.push_str("    (local.set $closure (global.get $result))\n");
+        }
+    }
 }
 
 /// Write the answer into the return area.
@@ -419,41 +509,14 @@ fn lift(out: &mut String, e: &Export) {
             ],
         },
     ));
-    writeln!(out, "    (call $ok (local.get $ret) {})", lift_expr(&e.ok)).unwrap();
-}
-
-/// The component's value, as the constructor the backend expects.
-///
-/// `(d << 1) | 1` is `2*ord+1` with the ordinal equal to the discriminant,
-/// which holds for an `enum` because the generator writes the inductive in the
-/// world's case order, and for `bool` because the pipeline's swap
-/// (`CertiRocq.Plugin.Loader`: `bool => "bool" [ 1 0 ]`) happens to line its
-/// ordinals up with the component model's `false = 0, true = 1`. Two reasons,
-/// one shift -- and [`Repr::tags_are_the_formula`] is what keeps it honest if
-/// either reason stops holding.
-fn lower(e: &Export) -> String {
-    let p = &e.param.rocq_name;
-    match &e.param.repr {
-        // The pointer to the payload stored just above, not the value.
-        Repr::Int63 => format!("(local.get {ARG})"),
-        // `i32.ne` first: the canonical ABI lifts any non-zero byte as `true`,
-        // and a 2 shifted left would name a third constructor `bool` has not
-        // got.
-        Repr::Bool => format!(
-            "(i32.or (i32.shl (i32.ne (local.get ${p}) (i32.const 0)) (i32.const 1)) (i32.const 1))"
-        ),
-        Repr::Enum { .. } => {
-            format!("(i32.or (i32.shl (local.get ${p}) (i32.const 1)) (i32.const 1))")
-        }
+    // CertiRocq -> canonical ABI, the direction an export's result goes --
+    // and the one an import wrapper's *arguments* would go, which is why it
+    // is emitted from `convert` rather than from here.
+    let lifted = convert::from_rocq(&e.ok, &format!("(global.get ${})", exports::RESULT));
+    for line in &lifted.prologue {
+        writeln!(out, "    {line}").unwrap();
     }
-}
-
-/// The backend's value, as the component's.
-fn lift_expr(ok: &Repr) -> String {
-    match ok {
-        Repr::Int63 => "(i64.load (global.get $result))".into(),
-        Repr::Bool | Repr::Enum { .. } => "(i32.shr_u (global.get $result) (i32.const 1))".into(),
-    }
+    writeln!(out, "    (call $ok (local.get $ret) {})", lifted.value).unwrap();
 }
 
 fn result_type(e: &Export) -> String {
@@ -469,14 +532,6 @@ fn error_cases(d: &Discriminants) -> String {
         cases.push(format!("out-of-range = {case}"));
     }
     cases.join(", ")
-}
-
-/// The core type a payload of this representation is stored from.
-fn payload_wasm_type(ok: &Repr) -> &'static str {
-    match ok {
-        Repr::Int63 => "i64",
-        Repr::Bool | Repr::Enum { .. } => "i32",
-    }
 }
 
 /// The store the ok payload needs, which is the payload's own width rather

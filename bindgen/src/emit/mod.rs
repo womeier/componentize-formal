@@ -3,11 +3,24 @@
 //! The split is deliberate: [`plan`] answers every question and can fail,
 //! [`rocq`], [`adapter`] and [`build`] format the answers and cannot. So a run
 //! either writes a set of files that agree with each other or writes nothing.
+//!
+//! [`convert`] sits under the emitters rather than beside them: it holds the
+//! two conversions between CertiRocq's values and the canonical ABI's, in both
+//! directions, so an export's glue and an import wrapper's are the same pair
+//! used in opposite orders.
+//!
+//! [`roundtrip`] is not in [`artifacts`] and a component build never sees it.
+//! It emits a module that composes each of those conversions both ways so that
+//! `checks/roundtrip.py` can run them and require the value back unchanged --
+//! the one direction an export adapter never exercises is the one an import
+//! wrapper will be built on (TODO.md#imports).
 
 pub mod adapter;
 pub mod build;
+pub mod convert;
 pub mod plan;
 pub mod rocq;
+pub mod roundtrip;
 
 use std::fs;
 use std::path::{Path, PathBuf};

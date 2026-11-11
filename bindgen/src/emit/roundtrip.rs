@@ -1,0 +1,300 @@
+//! A module that runs every conversion in [`super::convert`] both ways, so
+//! `checks/roundtrip.py` can require the value to come back unchanged.
+//!
+//! This is not part of a component build and `generate` never writes it. It
+//! exists because the conversions are a *pair*, and an export adapter only
+//! ever exercises each direction in one position: a parameter goes canonical
+//! -> Rocq, a result goes Rocq -> canonical. An import wrapper will need them
+//! the other way round (TODO.md#imports), and "the shift inverts the shift"
+//! is exactly the kind of claim that is obviously true until a representation
+//! moves underneath it.
+//!
+//! So each representation gets two exported functions, each composing the pair
+//! in one order, and each expected to be the identity:
+//!
+//! ```text
+//!   canonical_<type>   v  ->  to_rocq    ->  from_rocq  ->  v
+//!   rocq_<type>        x  ->  from_rocq  ->  to_rocq    ->  x
+//! ```
+//!
+//! The identity is the whole expectation, which is why the values are emitted
+//! alongside rather than written out in the check: a round trip has nothing to
+//! compare against but its own input. What the check does restate is the
+//! boundaries it will not run without -- see `checks/roundtrip.py`.
+//!
+//! **Where it is the identity.** On the values the type actually has. A
+//! canonical `bool` is 0 or 1; the canonical ABI lifts *any* non-zero byte as
+//! `true`, so `to_rocq` normalises 2 to `true` and the trip back gives 1
+//! rather than 2. That is the conversion being right, not a round trip
+//! failing, so the emitted values are the type's own.
+
+use std::fmt::Write;
+
+use serde::Serialize;
+
+use super::plan::{Plan, Repr};
+use super::{comment, convert, MARKER};
+use crate::repr;
+
+/// Where the two boxes a boxed round trip needs live, in the harness's own
+/// memory. Two, not one: storing twice into the same cell and reading it back
+/// would pass even if the second store never happened.
+const BOX_A: u32 = 0;
+const BOX_B: u32 = 16;
+
+/// What the check needs to know to run one representation's round trip.
+#[derive(Debug, Clone, Serialize)]
+pub struct Pair {
+    /// The Rocq type, which names both exports.
+    pub rocq_type: String,
+    /// The export going canonical -> Rocq -> canonical.
+    pub canonical: String,
+    /// The export going Rocq -> canonical -> Rocq.
+    pub rocq: String,
+    /// The core wasm type both take and return.
+    pub core: &'static str,
+    /// Values on the canonical side the pair must be the identity on.
+    pub canonical_values: Vec<String>,
+    /// The same trip from the other side: immediates for a nullary
+    /// representation, payloads for a boxed one.
+    pub rocq_values: Vec<String>,
+}
+
+/// The harness module, and the manifest describing what to call in it.
+pub fn module(plan: &Plan) -> (String, Vec<Pair>) {
+    // One pair per distinct representation the world carries, parameters and
+    // result together: the conversion is a property of the representation, not
+    // of the position it appears in.
+    let mut pairs: Vec<(Pair, Repr)> = Vec::new();
+    for repr in plan
+        .export
+        .params
+        .iter()
+        .map(|p| &p.repr)
+        .chain([&plan.export.ok])
+    {
+        let this = pair(repr);
+        if !pairs.iter().any(|(p, _)| p.rocq_type == this.rocq_type) {
+            pairs.push((this, repr.clone()));
+        }
+    }
+
+    let mut out = comment::wat(
+        "",
+        &[
+            format!(
+                "{MARKER} --roundtrip wrote this from the world `{}`:",
+                plan.world_name
+            ),
+            String::new(),
+            format!("    {}", plan.export.signature),
+            String::new(),
+            "It is not part of a component build and `generate` never writes".into(),
+            "it. Each pair of exports composes the two conversions in".into(),
+            "bindgen/src/emit/convert.rs in one order, and each is expected to".into(),
+            "be the identity -- which is the property an import wrapper will".into(),
+            "rest on, established before there is one. checks/roundtrip.py".into(),
+            "runs it.".into(),
+        ],
+    );
+    out.push_str("(module\n");
+    out.push_str(&comment::wat(
+        "  ",
+        &[
+            "The harness's own memory: nothing here links against the backend,".to_string(),
+            format!(
+                "since a conversion only ever touches memory and arithmetic. The {}",
+                repr::PRIM_PAYLOAD_SIZE
+            ),
+            "bytes a boxed payload needs are at two addresses, so a trip that".into(),
+            "forgets its second store cannot pass by reading the first one".into(),
+            "back. Both arrive dirty, for the same reason the stubs under".into(),
+            "examples/ do: over a zeroed page a forgotten store reads as 0,".into(),
+            "which is a value the round trip is run with.".into(),
+        ],
+    ));
+    out.push_str("  (memory (export \"memory\") 1)\n");
+    writeln!(out, "  (global $box_a i32 (i32.const {BOX_A}))").unwrap();
+    writeln!(out, "  (global $box_b i32 (i32.const {BOX_B}))").unwrap();
+    writeln!(
+        out,
+        "  (data (i32.const {BOX_A}) \"{}\")\n",
+        "\\a5".repeat((BOX_B + repr::PRIM_PAYLOAD_SIZE - BOX_A) as usize)
+    )
+    .unwrap();
+
+    for (pair, repr) in &pairs {
+        emit_pair(&mut out, pair, repr);
+    }
+    out.push_str(")\n");
+    (out, pairs.into_iter().map(|(p, _)| p).collect())
+}
+
+/// The manifest `checks/roundtrip.py` reads: what to call in the module, with
+/// what, and what to expect back.
+///
+/// TOML rather than JSON because the repository already depends on a TOML
+/// parser on both sides -- `toml` here, `tomllib` in the check -- and a
+/// manifest format is not worth a dependency.
+///
+/// The expected value is never in it. A round trip has nothing to compare
+/// against but its own input, so the check compares against what it sent; a
+/// manifest that also carried the answer could agree with a broken generator
+/// about both.
+pub fn manifest(plan: &Plan, pairs: &[Pair]) -> String {
+    #[derive(Serialize)]
+    struct Manifest<'a> {
+        world: &'a str,
+        signature: &'a str,
+        pair: &'a [Pair],
+    }
+
+    let doc = toml::to_string_pretty(&Manifest {
+        world: &plan.world_name,
+        signature: &plan.export.signature,
+        pair: pairs,
+    })
+    .expect("a manifest of strings and numbers always serialises");
+
+    format!(
+        "{}\n{doc}",
+        super::comment::make(&[
+            format!("{MARKER} --roundtrip wrote this."),
+            String::new(),
+            "What to call in the harness module next to it, with what, and".to_string(),
+            "what to expect back -- which is always the value sent, since a".to_string(),
+            "round trip is expected to be the identity. checks/roundtrip.py".to_string(),
+            "reads it.".to_string(),
+        ])
+    )
+}
+
+fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
+    let core = pair.core;
+
+    // canonical -> Rocq -> canonical.
+    out.push_str(&comment::wat(
+        "  ",
+        &[format!(
+            "A canonical `{}` into the backend's representation and back.",
+            pair.rocq_type
+        )],
+    ));
+    writeln!(
+        out,
+        "  (func (export \"{}\") (param $v {core}) (result {core})",
+        pair.canonical
+    )
+    .unwrap();
+    let there = convert::to_rocq(repr, "(local.get $v)", Some("(global.get $box_a)"));
+    for line in &there.prologue {
+        writeln!(out, "    {line}").unwrap();
+    }
+    let back = convert::from_rocq(repr, &there.value);
+    for line in &back.prologue {
+        writeln!(out, "    {line}").unwrap();
+    }
+    writeln!(out, "    {})\n", back.value).unwrap();
+
+    // Rocq -> canonical -> Rocq.
+    out.push_str(&comment::wat(
+        "  ",
+        &match repr {
+            Repr::Int63 => vec![
+                format!(
+                    "A boxed `{}` out to the canonical ABI and back.",
+                    pair.rocq_type
+                ),
+                "The value is the payload: the box itself is an address, which".into(),
+                "says nothing from outside the module, so what goes in is".into(),
+                "stored into the first box and what comes out is read from the".into(),
+                "second.".into(),
+            ],
+            Repr::Bool | Repr::Enum { .. } => vec![
+                format!(
+                    "A `{}` immediate -- `2*ord+1`, as the backend leaves it --",
+                    pair.rocq_type
+                ),
+                "out to the canonical ABI and back.".into(),
+            ],
+        },
+    ));
+    writeln!(
+        out,
+        "  (func (export \"{}\") (param $v {core}) (result {core})",
+        pair.rocq
+    )
+    .unwrap();
+    // The Rocq-side value to start from. For a boxed representation that
+    // means building one, which is `to_rocq` -- setup, not the trip.
+    let start = match repr {
+        Repr::Int63 => {
+            let build = convert::to_rocq(repr, "(local.get $v)", Some("(global.get $box_a)"));
+            for line in &build.prologue {
+                writeln!(out, "    {line}").unwrap();
+            }
+            build.value
+        }
+        Repr::Bool | Repr::Enum { .. } => "(local.get $v)".to_string(),
+    };
+    let out_ = convert::from_rocq(repr, &start);
+    for line in &out_.prologue {
+        writeln!(out, "    {line}").unwrap();
+    }
+    let home = convert::to_rocq(repr, &out_.value, Some("(global.get $box_b)"));
+    for line in &home.prologue {
+        writeln!(out, "    {line}").unwrap();
+    }
+    // What a caller can compare: the payload for a boxed representation, the
+    // immediate itself for the others.
+    let observable = match repr {
+        Repr::Int63 => format!("(i64.load {})", home.value),
+        Repr::Bool | Repr::Enum { .. } => home.value.clone(),
+    };
+    writeln!(out, "    {observable})\n").unwrap();
+}
+
+/// The values a representation's round trip is run with, and the names of its
+/// two exports.
+fn pair(repr: &Repr) -> Pair {
+    let rocq_type = repr.rocq_type().to_string();
+    let (canonical_values, rocq_values) = match repr {
+        // The whole range `Uint63.int` holds, ends included. 2^63 and above is
+        // not here on purpose: it has no `Uint63.int`, which is why the
+        // adapter range-checks it and answers `out-of-range` instead of
+        // converting it (TODO.md#failure-channel).
+        Repr::Int63 => {
+            let values: Vec<String> =
+                ["0", "1", "42", "4611686018427387903", "9223372036854775807"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+            // The payload is the same number on both sides; what differs is
+            // which conversion runs first.
+            (values.clone(), values)
+        }
+        // A canonical `bool` is 0 or 1. Not 2: the canonical ABI lifts any
+        // non-zero byte as `true`, so the trip normalises it rather than
+        // returning it, and that is the conversion being right.
+        Repr::Bool => (
+            vec!["0".into(), "1".into()],
+            vec![repr::BOOL_FALSE.to_string(), repr::BOOL_TRUE.to_string()],
+        ),
+        // Every case, because the immediate is per case and a shift that was
+        // right for the first one can be wrong for the last.
+        Repr::Enum { cases, .. } => (
+            (0..*cases).map(|d| d.to_string()).collect(),
+            (0..*cases as u32)
+                .map(|d| repr::nullary_immediate(d).to_string())
+                .collect(),
+        ),
+    };
+    Pair {
+        canonical: format!("canonical_{rocq_type}"),
+        rocq: format!("rocq_{rocq_type}"),
+        core: convert::core_type(repr),
+        rocq_type,
+        canonical_values,
+        rocq_values,
+    }
+}

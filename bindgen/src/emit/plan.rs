@@ -129,11 +129,11 @@ pub struct Layout {
     /// Width of the `result` discriminant, and of the `error` enum's.
     pub ret_tag: Int,
     pub err_tag: Int,
-    /// Bytes taken off `mem_ptr`: the return area, then the boxed argument.
+    /// Bytes taken off `mem_ptr`: the return area, then one box per boxed
+    /// parameter. Every box is reserved up front and none is reused, because
+    /// applying an argument captures its box *by address* and a later
+    /// application reads back through that pointer (TODO.md#arity).
     pub reserve: u32,
-    /// Offset of the boxed argument from the start of the reservation, when
-    /// the parameter is boxed.
-    pub arg: Option<u32>,
 }
 
 /// The discriminants the adapter writes. All read off the types rather than
@@ -144,7 +144,8 @@ pub struct Discriminants {
     pub err: u32,
     pub out_of_memory: u32,
     /// `None` when no parameter can be out of range, in which case the adapter
-    /// emits no range check either.
+    /// emits no range check either. One case for all of them: the enum says
+    /// *that* an argument was out of range, not which.
     pub out_of_range: Option<u32>,
 }
 
@@ -155,6 +156,18 @@ pub struct Param {
     pub repr: Repr,
     /// The core wasm type the canonical ABI flattens this parameter to.
     pub wasm: &'static str,
+    /// Offset of this parameter's box from the start of the reservation, and
+    /// the wat local holding its address. `None` for an immediate, which is
+    /// passed as itself and needs no heap cell.
+    pub box_offset: Option<u32>,
+    pub box_local: Option<String>,
+}
+
+impl Param {
+    /// Is this argument handed over as the address of a heap cell?
+    pub fn boxed(&self) -> bool {
+        self.box_offset.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -166,7 +179,10 @@ pub struct Export {
     /// How the export reads in the world, for the comment at the top of each
     /// generated file.
     pub signature: String,
-    pub param: Param,
+    /// In WIT declaration order, which is the order the adapter applies them
+    /// in: the compiled closure takes one argument at a time, so parameter
+    /// *i* is the *i*-th application (TODO.md#arity).
+    pub params: Vec<Param>,
     pub ok: Repr,
     pub layout: Layout,
     pub discriminants: Discriminants,
@@ -283,14 +299,18 @@ impl Plan {
         let rocq_name = rocq_ident(&wit_name, "export", &mut taken)?;
 
         ensure!(
-            func.params.len() == 1,
-            "`{wit_name}` takes {} parameters; only one is handled, which the gate \
-             should have rejected (E-ARITY-0/E-ARITY-N) -- see TODO.md#arity",
-            func.params.len()
+            !func.params.is_empty(),
+            "`{wit_name}` takes no parameters, which the gate should have rejected \
+             (E-ARITY-0) -- see TODO.md#arity"
         );
-        let wit_param = &func.params[0];
-        let param_repr = repr_of(resolve, wit_param.ty, &mut inductives, &mut taken)
-            .with_context(|| format!("parameter `{}` of `{wit_name}`", wit_param.name))?;
+        let param_reprs = func
+            .params
+            .iter()
+            .map(|p| {
+                repr_of(resolve, p.ty, &mut inductives, &mut taken)
+                    .with_context(|| format!("parameter `{}` of `{wit_name}`", p.name))
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         let result = func.result.context(
             "the export returns nothing, which the gate should have rejected \
@@ -310,29 +330,55 @@ impl Plan {
             .with_context(|| format!("the result of `{wit_name}`"))?;
 
         let sig = resolve.wasm_signature(AbiVariant::GuestExport, func);
-        let layout = layout(resolve, result, &sig, &param_repr, ok, err)?;
-        let discriminants = discriminants(resolve, err, &param_repr)?;
+        let (layout, boxes) = layout(resolve, result, &sig, &param_reprs, ok, err)?;
+        let discriminants = discriminants(resolve, err, &param_reprs)?;
 
         // What the gate says can go wrong has to be what the adapter can
         // report. A failure mode added there without a branch here would
         // otherwise become a trap, or worse, a plausible answer.
         let failures = support::failure_modes(resolve, func);
-        check_failures(&failures, &param_repr, &discriminants)?;
+        check_failures(&failures, &param_reprs, &discriminants)?;
 
-        // The parameter's name is also the wat local the adapter reads it
-        // from, so it has to clear the locals the adapter declares itself --
-        // two `$ret`s in one function is not a subtle failure, but it is one
-        // the generator should never emit.
+        // A parameter's name is also the wat local the adapter reads it from, so
+        // it has to clear the locals the adapter declares itself, and the
+        // other parameters -- two `$ret`s in one function is not a subtle
+        // failure, but it is one the generator should never emit. `rocq_ident`
+        // adds each name it accepts, so the parameters are checked against
+        // each other as they are taken.
         let mut locals = super::adapter::LOCALS
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
-        let param = Param {
-            wit_name: wit_param.name.clone(),
-            rocq_name: rocq_ident(&wit_param.name, "parameter", &mut locals)?,
-            wasm: wasm_type(&sig.params, &wit_name)?,
-            repr: param_repr,
-        };
+        let wasm = wasm_types(&sig.params, func.params.len(), &wit_name)?;
+        let mut params = Vec::new();
+        for (i, p) in func.params.iter().enumerate() {
+            params.push(Param {
+                wit_name: p.name.clone(),
+                rocq_name: rocq_ident(&p.name, "parameter", &mut locals)?,
+                wasm: wasm[i],
+                repr: param_reprs[i].clone(),
+                box_offset: boxes[i],
+                box_local: None,
+            });
+        }
+        // The box locals are named once the parameters are, since all but the
+        // one-parameter spelling are derived from them and have to clear the
+        // same set.
+        for i in 0..params.len() {
+            if params[i].box_offset.is_none() {
+                continue;
+            }
+            let name = box_local(&params, i);
+            ensure!(
+                name == ONE_ARG_LOCAL || !locals.contains(&name),
+                "parameter `{}` needs a box, and the local for it (`${name}`) is \
+                 already taken -- by another name in this world, or by a local the \
+                 generated adapter declares. Rename it in the WIT file.",
+                params[i].wit_name
+            );
+            locals.push(name.clone());
+            params[i].box_local = Some(name);
+        }
 
         Ok(Plan {
             module_type: module_type_name(&w.name)?,
@@ -341,7 +387,7 @@ impl Plan {
                 signature: signature(resolve, &wit_name, func),
                 wit_name,
                 rocq_name,
-                param,
+                params,
                 ok: ok_repr,
                 layout,
                 discriminants,
@@ -476,14 +522,17 @@ fn result_halves(resolve: &Resolve, ty: Type) -> Result<(Option<Type>, Type)> {
 
 /// Canonical-ABI numbers for the return area, plus the bump-pointer
 /// reservation the adapter takes for it.
+/// Returns the canonical-ABI numbers, and where each parameter's box sits in
+/// the reservation -- positionally, `None` for a parameter that is an
+/// immediate.
 fn layout(
     resolve: &Resolve,
     result: Type,
     sig: &wit_parser::abi::WasmSignature,
-    param: &Repr,
+    params: &[Repr],
     ok: Type,
     err: Type,
-) -> Result<Layout> {
+) -> Result<(Layout, Vec<Option<u32>>)> {
     // A result that flattens to one core value is returned in a register, with
     // no return area at all -- a different adapter shape than the one emitted
     // here. Nothing in the supported subset does that (`result<T, error>` is
@@ -498,10 +547,18 @@ fn layout(
          plus a payload.",
         sig.results.len()
     );
+    // Above `MAX_FLAT_PARAMS` flat values the canonical ABI passes the
+    // parameters through a pointer to a tuple in memory instead of one core
+    // value each, which is a different adapter prologue than the one emitted
+    // here. Every type carried today flattens to exactly one value, so this
+    // bounds the arity rather than describing a case to handle.
     ensure!(
         !sig.indirect_params,
-        "the parameters are passed indirectly, which only happens above {} flat \
-         values and the gate allows one parameter",
+        "this export's {} parameters flatten to more than the {} flat values the \
+         canonical ABI passes directly, so they arrive through a pointer rather \
+         than one core parameter each -- which the generated adapter does not \
+         read. See TODO.md#arity.",
+        params.len(),
         wit_parser::Resolve::MAX_FLAT_PARAMS
     );
 
@@ -526,21 +583,49 @@ fn layout(
          {ADAPTER_ALIGN} the adapter aligns `mem_ptr` to"
     );
     let area = ret_size.next_multiple_of(ADAPTER_ALIGN);
-    let (reserve, arg) = if param.boxed() {
-        (area + repr::PRIM_PAYLOAD_SIZE, Some(area))
-    } else {
-        (area, None)
-    };
+    // One box per boxed parameter, in parameter order, above the return area.
+    // They are all live at once: the first application captures its box by
+    // address and the last application can still be reading it, so these
+    // cannot overlap or be reused (TODO.md#arity).
+    let mut reserve = area;
+    let mut boxes = Vec::with_capacity(params.len());
+    for param in params {
+        match param.boxed() {
+            true => {
+                boxes.push(Some(reserve));
+                reserve += repr::PRIM_PAYLOAD_SIZE;
+            }
+            false => boxes.push(None),
+        }
+    }
 
-    Ok(Layout {
-        ret_size,
-        ret_align,
-        payload,
-        ret_tag,
-        err_tag: enum_tag(resolve, err)?,
-        reserve,
-        arg,
-    })
+    Ok((
+        Layout {
+            ret_size,
+            ret_align,
+            payload,
+            ret_tag,
+            err_tag: enum_tag(resolve, err)?,
+            reserve,
+        },
+        boxes,
+    ))
+}
+
+/// The wat local a boxed argument goes in.
+///
+/// With one parameter there is no ambiguity about which argument `$arg` is,
+/// and `$arg` is what the hand-written `examples/plus1` adapter -- the
+/// reference this emitter is held to -- calls it. With several, each box is
+/// named after its parameter, so which application is being emitted can be
+/// read off the code.
+pub const ONE_ARG_LOCAL: &str = "arg";
+
+fn box_local(params: &[Param], i: usize) -> String {
+    match params.len() {
+        1 => ONE_ARG_LOCAL.to_string(),
+        _ => format!("{ONE_ARG_LOCAL}_{}", params[i].rocq_name),
+    }
 }
 
 /// What the adapter aligns the return area, and its reservation, to.
@@ -558,7 +643,7 @@ fn enum_tag(resolve: &Resolve, ty: Type) -> Result<Int> {
 }
 
 /// The discriminants the adapter stores, by name rather than by position.
-fn discriminants(resolve: &Resolve, err: Type, param: &Repr) -> Result<Discriminants> {
+fn discriminants(resolve: &Resolve, err: Type, params: &[Repr]) -> Result<Discriminants> {
     let cases = crate::error_case_names(resolve, err)?;
     let case = |name: &str| -> Result<u32> {
         cases
@@ -579,7 +664,9 @@ fn discriminants(resolve: &Resolve, err: Type, param: &Repr) -> Result<Discrimin
         ok: 0,
         err: 1,
         out_of_memory: case("out-of-memory")?,
-        out_of_range: match param.boxed() {
+        // One case for however many parameters can be out of range: the
+        // adapter checks each of them, and every check reports the same thing.
+        out_of_range: match params.iter().any(Repr::boxed) {
             true => Some(case("out-of-range")?),
             false => None,
         },
@@ -587,18 +674,26 @@ fn discriminants(resolve: &Resolve, err: Type, param: &Repr) -> Result<Discrimin
 }
 
 /// Every way the gate says this call can fail must have somewhere to go.
-fn check_failures(failures: &[Failure], param: &Repr, discriminants: &Discriminants) -> Result<()> {
+fn check_failures(
+    failures: &[Failure],
+    params: &[Repr],
+    discriminants: &Discriminants,
+) -> Result<()> {
     for failure in failures {
         match failure {
             // Unconditional, and `discriminants` found its case by name or
             // failed there; nothing left to check.
             Failure::OutOfMemory => {}
             Failure::OutOfRange(what) => ensure!(
-                param.boxed() && discriminants.out_of_range.is_some(),
+                params.iter().any(Repr::boxed) && discriminants.out_of_range.is_some(),
                 "the gate reports that this export can fail with out of range ({what}), \
-                 but the adapter emitted for a {} parameter has no range check. Teach \
-                 the adapter that case, or narrow `support::failure_modes`",
-                param.rocq_type()
+                 but the adapter emitted for its parameters ({}) has no range check. \
+                 Teach the adapter that case, or narrow `support::failure_modes`",
+                params
+                    .iter()
+                    .map(|p| p.rocq_type())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         }
     }
@@ -613,18 +708,30 @@ fn check_failures(failures: &[Failure], param: &Repr, discriminants: &Discrimina
     Ok(())
 }
 
-/// The single core parameter type, as it is written in wat.
-fn wasm_type(params: &[WasmType], export: &str) -> Result<&'static str> {
+/// The core parameter types, as they are written in wat -- one per WIT
+/// parameter, positionally.
+///
+/// Every type carried today flattens to exactly one core value, so the two
+/// lists line up and parameter *i* is core parameter *i*. A type that
+/// flattened to several (a record, a tuple) would break that correspondence
+/// silently, mapping the adapter's second argument onto the first one's second
+/// field, so the counts disagreeing is a refusal rather than something to
+/// work out.
+fn wasm_types(flat: &[WasmType], declared: usize, export: &str) -> Result<Vec<&'static str>> {
     ensure!(
-        params.len() == 1,
-        "`{export}` flattens to {} core parameters; the generated adapter takes one",
-        params.len()
+        flat.len() == declared,
+        "`{export}` declares {declared} parameter(s) but flattens to {} core \
+         value(s), so they do not correspond one to one -- which the gate should \
+         have rejected (E-STRUCTURED) -- see TODO.md#structured-types",
+        flat.len()
     );
-    match params[0] {
-        WasmType::I32 | WasmType::Pointer | WasmType::Length => Ok("i32"),
-        WasmType::I64 => Ok("i64"),
-        other => bail!("a {other:?} parameter is not carried -- see TODO.md"),
-    }
+    flat.iter()
+        .map(|ty| match ty {
+            WasmType::I32 | WasmType::Pointer | WasmType::Length => Ok("i32"),
+            WasmType::I64 => Ok("i64"),
+            other => bail!("a {other:?} parameter is not carried -- see TODO.md"),
+        })
+        .collect()
 }
 
 /// How the export reads in the WIT file, for the comment the generated files

@@ -7,7 +7,7 @@ right: `wasm-merge`, `component embed`, `component new`, then `wasmtime` with
 the answers spelled out below.
 
 Each expectation is written out in full rather than computed, because a
-computed expectation can be wrong in the same way the adapter is. Three of
+computed expectation can be wrong in the same way the adapter is. Several of
 them are load-bearing:
 
   * `plus1(9223372036854775807) = ok(0)` -- Uint63 wraps, so wrapping is the
@@ -20,10 +20,16 @@ them are load-bearing:
     ordinal 0 while `too-big` is unboxed ordinal 1. Give `exactly` the ordinal
     its WIT discriminant suggests and the answer comes back
     `ok(at-least(42))`.
+  * `minus(3, 10) = ok(9223372036854775801)` -- subtraction is not
+    commutative, so this is the one answer that changes if the adapter applies
+    the two arguments in the wrong order. An `add` example cannot catch that
+    at all: `a + b` is right either way.
   * `err(out-of-memory)` -- the allocator is reported, not trapped on. The
     `record` example reaches it through the *second* check, after a call that
     succeeded in building its closure and then ran out; delete that check and
-    the component answers `ok({start: 0, byte-length: 0})`.
+    the component answers `ok({start: 0, byte-length: 0})`. `minus` reaches it
+    in the *middle* of the argument loop, where the next thing an unchecked
+    adapter does is call through a stale closure.
 
 Runs against `stub/`, which stands in for CertiRocq's output, so it needs no
 Rocq and no nixpkgs pin -- just wasm-tools, binaryen and wasmtime.
@@ -63,6 +69,20 @@ EXPECTED: dict[str, dict[str, list[str]]] = {
         ],
         "run-stub-oom": [
             "negb(true) with the heap exhausted = err(out-of-memory)",
+        ],
+    },
+    "minus": {
+        "run-stub": [
+            "minus(10, 3) = ok(7)",
+            "minus(3, 10) = ok(9223372036854775801)",
+            "minus(0, 1) = ok(9223372036854775807)",
+            "minus(9223372036854775807, 9223372036854775807) = ok(0)",
+            "minus(9223372036854775808, 0) = err(out-of-range)",
+            "minus(0, 9223372036854775808) = err(out-of-range)",
+        ],
+        "run-stub-oom": [
+            "minus(10, 3) with the heap exhausted between the applications "
+            "= err(out-of-memory)",
         ],
     },
     "record": {

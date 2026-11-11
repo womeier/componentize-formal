@@ -278,9 +278,13 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
         ),
     }
 
-    match f.params.len() {
-        1 => {}
-        0 => rep.reject(
+    // Several parameters are carried: the adapter applies them one at a time,
+    // which `examples/minus` measured against the real backend
+    // (TODO.md#arity). A nullary export is still turned away -- it is a value
+    // rather than a closure, so the adapter has a different prologue, not a
+    // shorter loop.
+    if f.params.is_empty() {
+        rep.reject(
             "E-ARITY-0",
             format!("func {name}() with no parameters"),
             format!("export {name}"),
@@ -288,16 +292,7 @@ fn check_function(resolve: &Resolve, f: &Function, name: &str, rep: &mut Report)
             "arity",
             "a nullary export is a value, not a closure, so the adapter reads glob_result \
              directly instead of calling through the table",
-        ),
-        n => rep.reject(
-            "E-ARITY-N",
-            format!("func {name} with {n} parameters"),
-            format!("export {name}"),
-            Reason::Planned(2),
-            "arity",
-            "needs iterated closure application, one argument per call_indirect, as the C \
-             glue's make_call does",
-        ),
+        )
     }
 
     for p in &f.params {

@@ -1,0 +1,8 @@
+# Build outputs. `make clean` removes the same set.
+*.wasm
+*.vo
+*.vok
+*.vos
+*.glob
+*.ir
+.*.aux

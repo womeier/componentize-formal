@@ -1,4 +1,4 @@
-package local:bad;
+package local:good;
 
 world w {
   use certirocq:abi/errors@0.1.0.{error};

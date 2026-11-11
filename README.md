@@ -88,6 +88,7 @@ use. Details in [`TODO.md#failure-channel`](TODO.md#failure-channel).
 | --- | --- |
 | `check` — accept or reject a world, with reasons | **supported** |
 | `generate` — `interface.v`, `extraction.v`, `adapter.wat`, `Makefile` | **supported** |
+| `roundtrip` — the conversion harness `checks.roundtrip` runs | **supported** |
 
 What holds `generate` to its word is that
 [`examples/`](examples) was written, built and run *before* the emitter
@@ -101,8 +102,13 @@ Some examples run *ahead* of the gate. [`record`](examples/record) and
 [`variant`](examples/variant) are the whole pipeline for constructs `generate`
 still refuses — hand-written, measured against modules the real CertiRocq
 compiled, and answering correctly. Those are the target the next support work
-is written against, and the check holds the generator to refusing them until it
-is done.
+is written against, and the check holds the generator to refusing them until
+it is done.
+
+[`minus`](examples/minus) was one of them until several parameters landed, and
+the move is what that work was for: the generator now emits its adapter token
+for token, so the same hand-written file that was a target is now the
+reference.
 
 ## WIT feature support
 
@@ -137,9 +143,9 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| one `export name: func(x: T) -> result<U, error>` | **supported** | one argument, one result, one error channel |
+| one `export name: func(x: T, ...) -> result<U, error>` | **supported** | any number of arguments, one result, one error channel |
 | `use` of a type-only interface | **supported** | needs no core import, so it costs nothing |
-| several parameters | [not supported](TODO.md#arity) | iterated closure application |
+| several parameters | **supported** | the backend curries, so the adapter applies them one at a time: a box and a `call_indirect` per argument, with the next closure read out of `result` in between ([`examples/minus`](examples/minus)) |
 | no parameters, or no result | [not supported](TODO.md#arity) | different adapter prologue |
 | several exports | [not supported](TODO.md#multi-export) | one compiled `MkExports` term carrying every closure |
 | imports | [not supported](TODO.md#imports) | `mod_imports := []` is baked into the correctness proof |
@@ -160,7 +166,7 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/src/emit/`](bindgen/src/emit) | the emitters: `rocq.rs`, `adapter.rs`, `build.rs`, each a pure function of the plan |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
-| [`examples/`](examples) | the whole pipeline for one export, hand-written before the emitter existed and so usable as evidence about it: [`plus1`](examples/plus1), [`negb`](examples/negb), and [`record`](examples/record) and [`variant`](examples/variant), which are ahead of the gate |
+| [`examples/`](examples) | the whole pipeline for one export, hand-written before the emitter existed and so usable as evidence about it: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), and [`record`](examples/record) and [`variant`](examples/variant), which are ahead of the gate |
 | [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
@@ -183,8 +189,9 @@ so a green checkout is a green branch:
 | `representation` | compiles Rocq functions with the real CertiRocq and checks the emitted modules against every claim in `repr.rs`, including the constructor immediates and the independent boxed/unboxed ordinals |
 | `smoke` | assembles each example into a component and checks what `wasmtime` says it answers |
 | `generated` | generates for each example's world and requires the result to be the hand-written files token for token, then assembles the generated adapter and requires the same answers. For an example ahead of the gate, requires instead that the generator refuses it with the right code and writes nothing |
+| `roundtrip` | emits each conversion in both orders and runs it under `wasmtime`, requiring the value back unchanged. An export adapter uses each direction in one position only; the other order is the one [function imports](TODO.md#imports) will need, so it is run before there is anything that needs it |
 
-The last four are Python scripts under [`checks/`](checks) and run standalone
+The last five are Python scripts under [`checks/`](checks) and run standalone
 in `nix develop` as well, which is often what you want while changing
 `repr.rs`. They guard against the same thing: a mismatch there does not break
 the build, it makes the adapter read the wrong bytes and return plausible

@@ -99,7 +99,6 @@ fn rejects_what_is_merely_unbuilt() {
     // signal; the other positions need lowering into the heap.
     expect_bad("nested-option.wit", &["E-OPTION"]);
     expect_bad("option-param.wit", &["E-OPTION"]);
-    expect_bad("arity.wit", &["E-ARITY-N"]);
     expect_bad("nullary.wit", &["E-ARITY-0"]);
     expect_bad("no-result.wit", &["E-NO-RESULT"]);
     expect_bad("multi-export.wit", &["E-MULTI-EXPORT"]);
