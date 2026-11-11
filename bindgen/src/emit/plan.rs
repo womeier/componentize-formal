@@ -588,7 +588,8 @@ impl Plan {
         ensure!(
             !func.params.is_empty(),
             "`{wit_name}` takes no parameters, which the gate should have rejected \
-             (E-ARITY-0) -- see TODO.md#arity"
+             ({}) -- see TODO.md#arity",
+            crate::codes::ARITY_0
         );
         let param_reprs = func
             .params
@@ -1025,14 +1026,25 @@ fn layout(
     // Above `MAX_FLAT_PARAMS` flat values the canonical ABI passes the
     // parameters through a pointer to a tuple in memory instead of one core
     // value each, which is a different adapter prologue than the one emitted
-    // here. Every type carried today flattens to exactly one value, so this
-    // bounds the arity rather than describing a case to handle.
+    // here.
+    //
+    // This is not a bound on the arity, though it was one while every carried
+    // type flattened to a single value. A sum flattens to a discriminant plus
+    // the join of its cases, so nine `option<u64>` parameters reach the limit
+    // that seventeen `u64` ones do -- and a user told only that nine
+    // parameters are "more than 16" has no way to see why. The count that
+    // trips this is the one the message names.
+    let flat = params
+        .iter()
+        .map(|p| p.flatten().map(|slots| slots.len()))
+        .sum::<Result<usize>>()?;
     ensure!(
         !sig.indirect_params,
-        "this export's {} parameters flatten to more than the {} flat values the \
-         canonical ABI passes directly, so they arrive through a pointer rather \
-         than one core parameter each -- which the generated adapter does not \
-         read. See TODO.md#arity.",
+        "[{}] this export's {} parameter(s) take {flat} flat values, more \
+         than the {} the canonical ABI passes directly, so they arrive through a \
+         pointer rather than one core parameter each -- which the generated \
+         adapter does not read. See TODO.md#arity.",
+        crate::codes::ARITY_FLAT,
         params.len(),
         wit_parser::Resolve::MAX_FLAT_PARAMS
     );
