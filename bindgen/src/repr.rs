@@ -160,6 +160,23 @@ pub mod sums {
     };
 }
 
+/// The one constructor of a one-constructor type -- a generated Rocq
+/// `Record`, or the Stdlib's `pair` -- is ordinal 0 in its class.
+///
+/// Not measured, unlike [`sums`], and the difference is the point.
+/// [`ordinal::assign`] numbers each class from zero in declaration order, so
+/// with a single constructor there is no order to get wrong: whichever class
+/// it lands in, boxed or unboxed, it is the zeroth of it. The remapping that
+/// makes `bool` the exception ([`BOOL_FALSE`]) is a permutation of a type's
+/// constructors, and a permutation of one thing is the identity.
+///
+/// Which class it lands in *does* depend on the type: a record with fields is
+/// boxed and the ordinal goes in the block's first cell, while a record with
+/// none is nullary and the value is [`nullary_immediate`] of this. Both are
+/// run against the real backend -- `examples/record` and the `empty` case in
+/// `checks/backend.py`.
+pub const SINGLE_CTOR_ORDINAL: u32 = 0;
+
 /// A non-nullary constructor is a pointer to `[ord, f0, f1, ...]`, one 4-byte
 /// cell each (`LambdaANF_to_Wasm.v:161`).
 pub const BOXED_ORDINAL_OFFSET: u32 = 0;

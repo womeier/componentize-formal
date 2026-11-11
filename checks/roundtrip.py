@@ -41,8 +41,8 @@ Worlds come from `bindgen/tests/wit/good` -- every shape the gate accepts, one
 fixture each -- and the run ends by checking that each variant of
 `plan.rs`'s `Repr` was reached, so a representation added without a fixture
 fails here instead of going quietly untested. A representation that has no
-round trip to run says so in `EXCLUDED`, with what runs it instead; `option`
-and `result` are there, because a sum is several core values rather than one.
+round trip to run says so in `EXCLUDED`, with what runs it instead; `option`,
+`result` and `record` are there, because none of them is one core value.
 
 Needs the generator and `wasmtime`:
 
@@ -70,16 +70,18 @@ REQUIRED = {
 }
 
 # The representations this harness cannot carry, and why. A round trip needs
-# the value to be one core value in each direction, and a sum is not one: its
-# canonical form is a discriminant and a payload at byte offsets, so the
-# conversion writes into memory instead of returning something to compare.
-# Both of its directions run against the real backend instead, in
-# `checks/backend.py`'s sum cases -- which is a weaker statement than an
-# identity, and is the one being made.
+# the value to be one core value in each direction, and neither a sum nor a
+# record is one. A sum's canonical form is a discriminant and a payload at
+# byte offsets; a record's is its fields' flattenings concatenated, which is
+# as many core values as the record has fields. In both cases it writes
+# into memory instead of returning something to compare. Both directions of
+# both run against the real backend instead, in `checks/backend.py`'s sum and
+# record cases -- which is a weaker statement than an identity, and is the one
+# being made.
 #
 # Listed rather than ignored: a variant that is neither required nor excluded
 # fails the parse below.
-EXCLUDED = {"Sum"}
+EXCLUDED = {"Sum", "Record"}
 
 # Every variant of `Repr` has to be reached by some fixture. The map is from
 # the variant name in plan.rs to what a pair from it looks like in the

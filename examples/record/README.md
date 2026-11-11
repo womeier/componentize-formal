@@ -11,12 +11,11 @@ record span {
 export grow: func(s: span) -> result<span, error>;
 ```
 
-**The gate rejects this world today** (`E-STRUCTURED`,
-[`TODO.md#structured-types`](../../TODO.md#structured-types)), so
-`componentize-formal generate` cannot produce these files. They are
-hand-written in the shape it will have to emit, measured against the real
-backend, and they run — which is what makes them a target rather than a guess.
-The same was true of [`plus1`](../plus1) before the emitter existed.
+Everything here except `impl.v` was hand-written in the shape
+`componentize-formal generate` would have to emit, measured against the real
+backend, and run — before the gate accepted a `record` at all. The emitter has
+since caught up, and `checks/generated.py` holds it to these files token for
+token, so they are the reference rather than its output.
 
 ```console
 $ nix develop
@@ -50,10 +49,15 @@ things instead of one: a box per field, and the record block pointing at them.
 
 ```
 $ret + 0   .. 24   the canonical-ABI return area
-$ret + 24  .. 32   `start`, boxed
-$ret + 32  .. 40   `byte-length`, boxed
-$arg + 0   .. 12   the `span`: [ordinal, &start, &byte-length]
+$arg + 0   .. 12   the `span` itself: [ordinal, &start, &byte-length]
+$arg + 12  .. 20   `start`, boxed
+$arg + 20  .. 28   `byte-length`, boxed
 ```
+
+The field boxes live inside the argument's *own* block, addressed off `$arg`
+rather than off `$ret`. It reads as a detail at one parameter and is not one at
+two: every parameter's cells have to be its own, or a second record would
+write over the first one's fields.
 
 **The ordinal is written, not assumed.** A record has one constructor, so its
 ordinal is 0 — and the compiled projections load it and execute `unreachable`
@@ -64,8 +68,11 @@ adapter that never wrote the ordinal would pass, because the cell it forgot
 would already hold the value it needed.
 
 **Every field is a double load on the way back.** `result` holds a pointer to
-the returned record, whose cells are pointers to the boxed fields:
-`i64.load (i32.load offset=4 (global.get $result))`.
+the returned record, whose cells are pointers to the boxed fields, so `$ok`
+takes the Rocq value and does both loads itself:
+`i64.load (i32.load offset=4 (local.get $val))`. Handing `$ok` one core
+parameter per field would read more simply and not generalize — a field that is
+an `option` has no single core value to hand it.
 
 **The second out-of-memory check is the one that fires.**
 [`stub/oom.wat`](stub/oom.wat) has a heap that runs out *during* the call
@@ -120,19 +127,20 @@ error: this CertiRocq does not export its function table as
 | --- | --- |
 | [`wit/world.wit`](wit/world.wit) | you — the interface comes first |
 | [`wit/deps/certirocq-abi/`](wit/deps/certirocq-abi) | vendored, because `wasm-tools component embed` reads the package off disk |
-| [`interface.v`](interface.v) | to be generated — the world as a `Record` and a `Module Type` |
+| [`interface.v`](interface.v) | generated — the world as a `Record` and a `Module Type` |
 | [`impl.v`](impl.v) | **you** — the only file that is yours |
-| [`extraction.v`](extraction.v) | to be generated — the `CertiRocq Compile Wasm` call |
-| [`adapter.wat`](adapter.wat) | to be generated — the canonical-ABI glue |
-| [`Makefile`](Makefile) | to be generated — `wasm-merge`, `component embed`, `component new` |
+| [`extraction.v`](extraction.v) | generated — the `CertiRocq Compile Wasm` call |
+| [`adapter.wat`](adapter.wat) | generated — the canonical-ABI glue |
+| [`Makefile`](Makefile) | generated — `wasm-merge`, `component embed`, `component new` |
 | [`component.toml`](component.toml) | you — what the WIT file cannot say |
 | [`stub/`](stub) | neither; it stands in for CertiRocq's output |
 
 ## Known gaps
 
-- **Records do not nest yet.** `span`'s fields are both `u64`. A field that is
-  itself a record means a layout walk on both sides, which is the rest of
-  [`TODO.md#structured-types`](../../TODO.md#structured-types).
+- **Nothing here nests**, though the emitter does it: `span`'s fields are both
+  `u64`. A record field that is itself a record, an `option` or a tuple is
+  carried by the same walk — `bindgen/tests/generate.rs` covers those shapes,
+  and no example runs one against the real backend yet.
 - **Every call re-runs `main_function`**, as in `plus1`: the fix is the
   [heap reset](../../TODO.md#heap-reset), and the cost is calls rather than
   correctness.

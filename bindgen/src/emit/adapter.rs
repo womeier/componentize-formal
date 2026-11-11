@@ -117,7 +117,10 @@ pub fn adapter(plan: &Plan) -> String {
         "  (func $ok (param $ret i32) (param $val {ty})\n\
          \x20   ({store_tag} (local.get $ret) (i32.const {ok}))",
         ty = match &e.ok {
-            Repr::Sum(_) => "i32",
+            // Neither is one core value, so `$ok` takes the Rocq value --
+            // always a pointer, except the one shape that is an immediate: a
+            // record with no fields.
+            Repr::Sum(_) | Repr::Record(_) => "i32",
             ok => convert::core_type(ok),
         },
         store_tag = convert::store_op(l.ret_tag),
@@ -193,17 +196,48 @@ pub fn adapter(plan: &Plan) -> String {
     };
     if !flattened.is_empty() {
         out.push('\n');
-        let mut lines = vec![
-            "The canonical ABI flattens a sum into a discriminant and the".to_string(),
-            "payload slots its two cases share, outermost first:".into(),
-            String::new(),
-        ];
+        // Which shape is being explained depends on which ones are here. A
+        // sum's slots are *shared* by its two cases, so saying so is the
+        // point; a record's are its fields' in order, so the names already
+        // say it and what is left to note is that nothing arrives by pointer.
+        let sums = e
+            .params
+            .iter()
+            .any(|p| p.slots.len() > 1 && matches!(p.repr, Repr::Sum(_)));
+        let records = e
+            .params
+            .iter()
+            .any(|p| p.slots.len() > 1 && matches!(p.repr, Repr::Record(_)));
+        let mut lines = match (sums, records) {
+            (true, false) => vec![
+                "The canonical ABI flattens a sum into a discriminant and the".to_string(),
+                "payload slots its two cases share, outermost first:".into(),
+            ],
+            (false, true) => vec![
+                "The canonical ABI flattens a record into its fields' slots,".to_string(),
+                "in declaration order -- so nothing arrives by pointer and the".into(),
+                "adapter has to *build* the value rather than box one:".into(),
+            ],
+            _ => vec![
+                "The canonical ABI flattens these into several core values --".to_string(),
+                "a record into its fields', a sum into a discriminant and the".into(),
+                "payload slots its two cases share:".into(),
+            ],
+        };
+        lines.push(String::new());
         lines.extend(flattened);
         out.push_str(&comment::wat("  ", &lines));
     }
+    // No space before `(result ...)` when there are no parameters, which is
+    // the one shape that has none: an export whose only parameter is a record
+    // with no fields flattens to nothing at all.
+    let params = match params.is_empty() {
+        true => String::new(),
+        false => format!("{params} "),
+    };
     writeln!(
         out,
-        "{lead}  (func (export \"{}\") {params} (result i32)",
+        "{lead}  (func (export \"{}\") {params}(result i32)",
         e.wit_name
     )
     .unwrap();
@@ -359,6 +393,15 @@ fn range_checks(out: &mut String, param: &super::plan::Param, case: u32) {
     }
 }
 
+/// How many flat values a type takes, for splitting a record's slots between
+/// its fields. A failure here is a bug: the plan flattened every type in the
+/// signature when it was built.
+fn flat_count(repr: &Repr) -> usize {
+    repr.flatten()
+        .expect("the plan flattened this type when it was built")
+        .len()
+}
+
 /// Every `u64` a parameter can carry: how to describe it, the discriminants
 /// that have to hold for it to be one, and the slot it arrives in.
 fn int63s(param: &super::plan::Param) -> Vec<(String, Vec<String>, String)> {
@@ -389,6 +432,24 @@ fn int63s(param: &super::plan::Param) -> Vec<(String, Vec<String>, String)> {
                         guards,
                         found,
                     );
+                }
+            }
+            // Every field, each taking its own flat values off the front.
+            // No guard is added: a record has one constructor, so every field
+            // is part of every value of the type -- unlike a sum's payload,
+            // which is only there when its case was the one sent.
+            Repr::Record(rec) => {
+                let mut rest = slots;
+                for field in &rec.fields {
+                    let take = flat_count(&field.repr);
+                    walk(
+                        &field.repr,
+                        &rest[..take],
+                        format!("{what}'s `{}` field", field.wit_name),
+                        guards.clone(),
+                        found,
+                    );
+                    rest = &rest[take..];
                 }
             }
         }
@@ -506,6 +567,24 @@ fn bounds(param: &super::plan::Param) -> Vec<(Vec<String>, Vec<String>, String)>
                     );
                 }
             }
+            // Every field, each taking its own flat values off the front.
+            // No guard is added: a record has one constructor, so every field
+            // is part of every value of the type -- unlike a sum's payload,
+            // which is only there when its case was the one sent.
+            Repr::Record(rec) => {
+                let mut rest = slots;
+                for field in &rec.fields {
+                    let take = flat_count(&field.repr);
+                    walk(
+                        &field.repr,
+                        &rest[..take],
+                        format!("{what}'s `{}` field", field.wit_name),
+                        guards.clone(),
+                        found,
+                    );
+                    rest = &rest[take..];
+                }
+            }
         }
     }
     let mut found = Vec::new();
@@ -612,6 +691,40 @@ fn call(out: &mut String, e: &Export) {
                 }));
                 out.push('\n');
                 out.push_str(&comment::wat("    ", &lines));
+            }
+            // A record is built in a prologue, since there is no branch:
+            // every field goes down, then the block pointing at them. With no
+            // fields there is no block either -- the value is an immediate --
+            // so that one falls through to the arm below and says nothing.
+            Repr::Record(rec) if !lowered.prologue.is_empty() => {
+                lines.extend([
+                    format!(
+                        "Build the `{}`. One constructor, so an ordinary boxed one:",
+                        rec.rocq_type
+                    ),
+                    format!(
+                        "the ordinal in the first {}-byte cell and one cell per field",
+                        repr::CELL
+                    ),
+                    "after it (repr.rs BOXED_ORDINAL_OFFSET, boxed_field_offset),".into(),
+                    format!("the ordinal being {}.", repr::SINGLE_CTOR_ORDINAL),
+                    String::new(),
+                    "It is written rather than assumed: the compiled projections".into(),
+                    "load it and trap on anything else, which an adapter tested".into(),
+                    "over a zeroed page would never find out.".into(),
+                    String::new(),
+                    "Each cell holds whatever its field's own representation is --".into(),
+                    format!(
+                        "a pointer for a boxed one, an immediate for the rest -- so the {}",
+                        repr::PRIM_PAYLOAD_SIZE
+                    ),
+                    "byte payloads go down first and the cells point at them.".into(),
+                ]);
+                out.push('\n');
+                out.push_str(&comment::wat("    ", &lines));
+                for line in &lowered.prologue {
+                    writeln!(out, "    {line}").unwrap();
+                }
             }
             _ if !lowered.prologue.is_empty() => {
                 lines.extend([
@@ -734,6 +847,27 @@ fn lift(out: &mut String, e: &Export) {
                 "that carries a payload, an immediate for the one that does".into(),
                 "not -- and `$ok` writes whichever it is into the return area.".into(),
             ],
+            Repr::Record(rec) if rec.fields.is_empty() => vec![
+                format!(
+                    "`{}` holds the immediate itself: `{}` carries",
+                    exports::RESULT,
+                    rec.ctor
+                ),
+                "nothing, so nothing was allocated and there is nothing to".into(),
+                "write into the return area either.".into(),
+            ],
+            Repr::Record(rec) => vec![
+                format!(
+                    "`{}` holds a pointer to the `{}` block, whose cells",
+                    exports::RESULT,
+                    rec.rocq_type
+                ),
+                format!(
+                    "are pointers to the {} boxed field(s) -- so a field is two",
+                    rec.fields.len()
+                ),
+                "loads, not one, and `$ok` does them.".into(),
+            ],
         },
     ));
     // CertiRocq -> canonical ABI, the direction an export's result goes --
@@ -743,7 +877,7 @@ fn lift(out: &mut String, e: &Export) {
     // A sum has no single core value to lift into, so `$ok` is handed the Rocq
     // value and does the writing (`convert::store_canonical`).
     let lifted = match &e.ok {
-        Repr::Sum(_) => convert::Conversion {
+        Repr::Sum(_) | Repr::Record(_) => convert::Conversion {
             prologue: Vec::new(),
             value: format!("(global.get ${})", exports::RESULT),
         },

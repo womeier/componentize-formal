@@ -1,7 +1,6 @@
-(* The shape `componentize-formal generate` will emit from wit/world.wit once
- * records are supported. It cannot emit this today: the gate rejects a
- * `record` with E-STRUCTURED, and this file is what it is being written
- * against (TODO.md#structured-types).
+(* The reference `componentize-formal generate` is held to for records, by
+ * checks.generated. Written by hand before the emitter could produce it, and
+ * reproduced by it token for token since (TODO.md#structured-types).
  *
  * A WIT record becomes a Rocq `Record`, which is a one-constructor inductive
  * -- so the representation is an ordinary boxed constructor and the

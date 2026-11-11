@@ -100,7 +100,12 @@ fn rejects_what_the_backend_cannot_represent() {
 fn rejects_what_is_merely_unbuilt() {
     expect_bad("signed.wit", &["E-SIGNED"]);
     expect_bad("float.wit", &["E-FLOAT"]);
+    // The two shapes `E-STRUCTURED` still names. A `variant` for its
+    // per-class ordinals; a `tuple` because nothing names it, so it would
+    // have to ride on the Stdlib's `prod` -- and a `record` of the same
+    // fields, which is carried, says the same thing.
     expect_bad("structured.wit", &["E-STRUCTURED"]);
+    expect_bad("tuple.wit", &["E-STRUCTURED", "E-STRUCTURED"]);
     expect_bad("nullary.wit", &["E-ARITY-0"]);
     expect_bad("no-result.wit", &["E-NO-RESULT"]);
     expect_bad("multi-export.wit", &["E-MULTI-EXPORT"]);
@@ -141,6 +146,92 @@ fn nesting_changes_no_answer() {
     assert_eq!(nested.len(), 1, "{nested:?}");
     assert_eq!(nested[0].0, "E-OPTION-UNIT");
     assert!(nested[0].1.contains("param `x`"), "{nested:?}");
+
+    // A record is carried, so a refusal inside one has to come from the walk
+    // over its fields rather than from the type around it -- and it names the
+    // field, which is the only thing that points at the line to change.
+    let field: Vec<_> = report(&fixture("bad", "record-tuple.wit"))
+        .rejections
+        .into_iter()
+        .map(|r| (r.code, r.site))
+        .collect();
+    assert_eq!(field.len(), 1, "{field:?}");
+    assert_eq!(field[0].0, "E-STRUCTURED");
+    assert!(field[0].1.contains("param `c`, field `at`"), "{field:?}");
+}
+
+/// The one refusal that is neither a representation this backend lacks nor a
+/// phase of the plan: a `record` with no fields. `wit-parser` accepts it and
+/// the component model has no type for it, so `wasm-tools component new`
+/// refuses the assembled module with "record type must have at least one
+/// field" -- an offset into a custom section, four build steps after the line
+/// that caused it. The gate says it while the field list is still on screen.
+///
+/// Nothing about the representation is in the way: a nullary constructor is an
+/// immediate, which is what every `enum` case already is.
+#[test]
+fn an_empty_record_has_no_component_type() {
+    expect_bad("record-empty.wit", &["E-RECORD-EMPTY"]);
+
+    // Reported wherever it is reachable -- the declaration in the world, the
+    // parameter and the result -- because each is a place the component type
+    // would have to be written.
+    let got: Vec<_> = report(&fixture("bad", "record-empty.wit"))
+        .rejections
+        .into_iter()
+        .map(|r| (r.reason, r.site))
+        .collect();
+    assert!(
+        got.iter()
+            .all(|(reason, _)| *reason == support::Reason::Malformed),
+        "{got:?}"
+    );
+    assert!(
+        got.iter().any(|(_, site)| site.contains("param `n`")),
+        "{got:?}"
+    );
+    assert!(
+        got.iter().any(|(_, site)| site.contains("result")),
+        "{got:?}"
+    );
+}
+
+/// The other refusal that is about the record rather than its fields, and the
+/// one `checks/backend.py` found: a record with exactly one field. The
+/// backend's erasure unboxes a single-constructor inductive of one argument,
+/// so the value *is* the field and the projection is the identity, while the
+/// emitters build a block and read a cell out of it. Against an unboxed value
+/// that is a wrong answer rather than a trap (TODO.md#record-unboxed).
+///
+/// Refused at every depth, because a one-field record nested in another is
+/// the shape that produced the wrong answer in the first place.
+#[test]
+fn a_one_field_record_is_not_a_block() {
+    expect_bad("record-single.wit", &["E-RECORD-UNBOXED"]);
+
+    let nested: Vec<_> = report(&fixture("bad", "record-single-nested.wit"))
+        .rejections
+        .into_iter()
+        .map(|r| (r.code, r.site))
+        .collect();
+    assert!(
+        nested.iter().all(|(code, _)| *code == "E-RECORD-UNBOXED"),
+        "{nested:?}"
+    );
+    // Named by the field it is a field of, which is the line to change --
+    // and in both positions, since `outer` is the parameter and the result.
+    assert!(
+        nested
+            .iter()
+            .any(|(_, site)| site.contains("param `o`, field `i`")),
+        "{nested:?}"
+    );
+    assert!(
+        nested
+            .iter()
+            .any(|(_, site)| site.contains("result, field `i`")),
+        "{nested:?}"
+    );
 }
 
 #[test]

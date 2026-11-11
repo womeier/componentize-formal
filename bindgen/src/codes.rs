@@ -55,6 +55,10 @@ pub const STRING: &str = "E-STRING";
 pub const OPTION_UNIT: &str = "E-OPTION-UNIT";
 /// A record, a tuple or a variant with a payload.
 pub const STRUCTURED: &str = "E-STRUCTURED";
+/// A record with no fields, which the component model cannot encode.
+pub const RECORD_EMPTY: &str = "E-RECORD-EMPTY";
+/// A record with exactly one field, which the backend erases to the field.
+pub const RECORD_UNBOXED: &str = "E-RECORD-UNBOXED";
 /// `flags`.
 pub const FLAGS: &str = "E-FLAGS";
 /// `list`.
@@ -85,6 +89,8 @@ pub const ALL: &[&str] = &[
     STRING,
     OPTION_UNIT,
     STRUCTURED,
+    RECORD_EMPTY,
+    RECORD_UNBOXED,
     FLAGS,
     LIST,
     MAP,

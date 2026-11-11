@@ -1,0 +1,17 @@
+package local:ok;
+
+// A record field that is a record, in both positions. Both levels carry two
+// fields, which is the smallest nesting the backend represents as two blocks:
+// a one-field record is erased to the field itself and refused
+// (TODO.md#record-unboxed).
+//
+// The offsets differ at the two levels on purpose -- `i` sits at 0 and `b` at
+// 16, `a` at 0 and `z` at 8 -- so a walk that used the inner record's offsets
+// where it wanted the outer one's would land somewhere else rather than
+// somewhere right.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  record inner { a: u64, z: u64 }
+  record outer { i: inner, b: u64 }
+  export bump: func(o: outer) -> result<outer, error>;
+}

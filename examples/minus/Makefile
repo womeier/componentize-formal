@@ -8,7 +8,7 @@ WASM_NAME  := rocq-minus
 # example, so every case exercises both.
 INVOKE     := 10,3 3,10 0,1 9223372036854775807,9223372036854775807 \
               9223372036854775808,0 0,9223372036854775808
-MERGE_OPTS := --enable-reference-types
+MERGE_OPTS := --enable-reference-types --enable-tail-call
 
 .PHONY: all run run-stub run-stub-oom clean
 all: run-stub

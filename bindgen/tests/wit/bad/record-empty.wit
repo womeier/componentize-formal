@@ -1,0 +1,18 @@
+package local:bad;
+
+// A record with no fields, which is not this tool turning something away:
+// `wit-parser` accepts the declaration and the component model has no type
+// for it, so `wasm-tools component new` refuses the module with "record type
+// must have at least one field" while decoding the world back out of the
+// `component-type` custom section. The gate says so here, where the field
+// list is still on screen.
+//
+// The *representation* is not the problem: a nullary constructor is an
+// immediate, which is what every `enum` case already is, and the ABI
+// flattens this record to no core values at all. It is the component type
+// that cannot be written.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  record nothing { }
+  export id: func(n: nothing) -> result<nothing, error>;
+}

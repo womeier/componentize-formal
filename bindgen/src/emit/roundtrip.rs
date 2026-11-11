@@ -98,12 +98,13 @@ pub fn module(plan: &Plan) -> (String, Vec<Pair>) {
         .map(|p| &p.repr)
         .chain([&plan.export.ok])
     {
-        // Sums are not here, and the omission is the point of the note in the
-        // module docs above: a round trip through one core value cannot
-        // express a value whose canonical form is a discriminant and a payload
-        // at byte offsets. `checks/backend.py` runs those both ways against
-        // the real backend instead.
-        if matches!(repr, Repr::Sum(_)) {
+        // Sums and records are not here, and the omission is the point of
+        // the note in the module docs above: a round trip through one core
+        // value cannot express a value whose canonical form is several of
+        // them -- a discriminant and a payload at byte offsets, or a field
+        // per cell. `checks/backend.py` runs those both ways against the real
+        // backend instead.
+        if matches!(repr, Repr::Sum(_) | Repr::Record(_)) {
             continue;
         }
         let this = pair(repr);
@@ -215,16 +216,30 @@ fn skipped(plan: &Plan) -> Vec<Skipped> {
         .map(|p| &p.repr)
         .chain([&plan.export.ok])
     {
-        let Repr::Sum(sum) = repr else { continue };
-        if out.iter().any(|s| s.rocq_type == sum.rocq_type) {
+        let (wit, rocq_type, reason) = match repr {
+            Repr::Sum(sum) => (
+                sum.wit.clone(),
+                sum.rocq_type.clone(),
+                "a discriminant and a payload at byte offsets is not one core value, \
+                 so there is no function to compose with itself; checks/backend.py \
+                 runs both directions against the real backend instead",
+            ),
+            Repr::Record(rec) => (
+                rec.wit.clone(),
+                rec.rocq_type.clone(),
+                "a field per cell is not one core value, so there is no function to \
+                 compose with itself; checks/backend.py runs both directions against \
+                 the real backend instead",
+            ),
+            _ => continue,
+        };
+        if out.iter().any(|s| s.rocq_type == rocq_type) {
             continue;
         }
         out.push(Skipped {
-            wit: sum.wit.clone(),
-            rocq_type: sum.rocq_type.clone(),
-            reason: "a discriminant and a payload at byte offsets is not one core value, \
-                     so there is no function to compose with itself; checks/backend.py \
-                     runs both directions against the real backend instead",
+            wit,
+            rocq_type,
+            reason,
         });
     }
     out
@@ -279,6 +294,7 @@ fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
                 "out to the canonical ABI and back.".into(),
             ],
             Repr::Sum(sum) => unreachable!("`{}` has no single-value round trip", sum.wit),
+            Repr::Record(rec) => unreachable!("`{}` has no single-value round trip", rec.wit),
         },
     ));
     writeln!(
@@ -291,6 +307,7 @@ fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
     // means building one, which is `to_rocq` -- setup, not the trip.
     let start = match repr {
         Repr::Sum(sum) => unreachable!("`{}` has no single-value round trip", sum.wit),
+        Repr::Record(rec) => unreachable!("`{}` has no single-value round trip", rec.wit),
         Repr::Int63 => {
             let build = convert::to_rocq(repr, &[sent(repr)], &cells(repr), box_a());
             for line in &build.prologue {
@@ -322,6 +339,7 @@ fn emit_pair(out: &mut String, pair: &Pair, repr: &Repr) {
         Repr::Int63 => format!("(i64.load {})", home.value),
         Repr::Bool | Repr::Enum { .. } => home.value.clone(),
         Repr::Sum(sum) => unreachable!("`{}` has no single-value round trip", sum.wit),
+        Repr::Record(rec) => unreachable!("`{}` has no single-value round trip", rec.wit),
     };
     writeln!(out, "    {observable})\n").unwrap();
 }
@@ -387,6 +405,7 @@ fn pair(repr: &Repr) -> Pair {
         ),
         // `module` filters these out before getting here.
         Repr::Sum(sum) => unreachable!("`{}` has no single-value round trip", sum.wit),
+        Repr::Record(rec) => unreachable!("`{}` has no single-value round trip", rec.wit),
     };
     Pair {
         canonical: format!("canonical_{rocq_type}"),

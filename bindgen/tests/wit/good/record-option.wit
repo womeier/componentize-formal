@@ -1,0 +1,11 @@
+package local:ok;
+
+// The two nestings crossed: a sum carrying a record, and a record carrying a
+// sum. `c`'s `u64` is two levels of case down, so its range check is reached
+// only when both discriminants say the payload is there -- and `seen` is a
+// field of the record, so it is there whenever the record is.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  record cursor { pos: option<u64>, seen: bool }
+  export step: func(c: option<cursor>) -> result<option<cursor>, error>;
+}

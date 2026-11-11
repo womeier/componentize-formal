@@ -27,7 +27,9 @@ section.
 | `E-ARITY-0`, `E-NO-RESULT` | exports with no parameters, or no result | [planned, phase 2](#arity) |
 | `E-MULTI-EXPORT` | more than one exported function | [planned, phase 2](#multi-export) |
 | `E-OPTION-UNIT` | `result` with a payload in neither case | [rejected outright](#option-result) |
-| `E-STRUCTURED` | `record`, `tuple`, `variant` | [planned, phase 3](#structured-types) |
+| `E-STRUCTURED` | `tuple`, `variant` | [planned, phase 3](#structured-types) |
+| `E-RECORD-EMPTY` | a `record` with no fields | [rejected outright](#record-empty) |
+| `E-RECORD-UNBOXED` | a `record` with one field | [planned, phase 3](#record-unboxed) |
 | `E-INT-WIDTH` | `u8`, `u16`, `u32` | [wanted, not scheduled](#integer-widths) |
 | `E-SIGNED` | `s8`, `s16`, `s32`, `s64` | [wanted, not scheduled](#signed-integers) |
 | `E-FLOAT` | `f64` | [planned, phase 4](#f64) |
@@ -331,6 +333,9 @@ emitted.
 | `flip` on a `result<u64, bool>` | `inl` and `inr`, the ordinals a swap upstream would exchange, mapped both ways in one call | runs |
 | `dig` on an `option<option<u64>>` | a sum inside a sum: the inner constructor built where the outer one's field is written, the payload lifted through two blocks | runs |
 | `shade` on an `option<colour>` | a sum whose payload is an *immediate*: the one shape where a boxed constructor's field is `2*ord+1` rather than a pointer, permuted so no case answers as another | runs |
+| `is-empty`, `whole` on a two-field `record` | the one-constructor box `[ord, f₀, f₁]`, its cells holding pointers, in each position | runs |
+| `bump` on a `record` whose field is a `record` | a block built where another block's cell is written, each field reached through its own compiled projection | runs |
+| a `tuple` in each position | the same box, reached without a name to declare it under | with [structured types](#structured-types) |
 | one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged | with the reset |
 | two and three exports | `MkExports` field offsets | with [several exports](#multi-export) |
 | `f64` round-trip | the boxed float | with `wasm-prim-floats` (phase 4) |
@@ -416,7 +421,9 @@ for MetaRocq, the build it existed to protect. It checks what is left ---
 CompCert, and the inputs MetaRocq is built from --- and says in its docstring
 what it gave up.
 
-**It compiles and runs.** All nine checks pass, and every example answers
+**It compiles and runs.** All nine checks pass on the pin, including the two
+that read `enum Repr` and so had to be told about `Repr::Record` before
+records could land --- and every example answers
 correctly through `make run`: CertiRocq's own module linked to the adapter,
 which could not be assembled at all before the export existed. Two things
 moved with the pin --- the plugin's flags are double-dashed now, `-file`
@@ -622,8 +629,10 @@ which is a prologue the adapter does not have. What counts is flat values, not
 parameters, and that stopped being the same number when
 [sums](#option-result) landed: a sum flattens to a discriminant plus the join
 of its cases, so nine `option<u64>` parameters hit the limit that seventeen
-`u64` ones do. The refusal says how many flat values the parameters actually
-take, because nine being "more than 16" is otherwise unreadable. Raised in the
+`u64` ones do. A [record](#structured-types) concatenates its fields'
+flattenings, so with those a *single* parameter can reach it alone. The
+refusal says how many flat values the parameters actually take, because nine
+being "more than 16" is otherwise unreadable. Raised in the
 planner rather than the gate -- it is the one refusal that needs the layout,
 since the gate walks types and this is a property of all of them together.
 
@@ -649,8 +658,9 @@ Definition __exports := MkExports Impl.plus1 Impl.negb.
 A single-constructor inductive of arity *n* is boxed as `[ord, f₀, …, fₙ₋₁]`
 (`LambdaANF_to_Wasm.v:161`), so export *i*'s adapter loads `offset=4*(i+1)` to
 get its closure and proceeds as the one-export case does. A Rocq tuple would
-*not* work: `(f, g, h)` is right-nested `pair f (pair g h)`, so it needs a spine
-walk instead of a flat index. `n = 1` skips the wrapper, keeping the generated
+*not* work: `(f, g, h)` is `pair (pair f g) h` --- Rocq's pair notation nests
+to the left, as [tuples](#structured-types) do --- so it needs a spine walk
+instead of a flat index. `n = 1` skips the wrapper, keeping the generated
 adapter comparable to the hand-written `plus1` one.
 
 ### <a id="option-result"></a>`option` and `result` as values — `E-OPTION-UNIT`
@@ -712,41 +722,59 @@ before emitting anything.
 
 ### <a id="structured-types"></a>Records, tuples and variants — `E-STRUCTURED`, phase 3
 
-`record`, `tuple` and `variant`, in any position. (`option` and `result` have
-their own, cheaper path — see [above](#option-result).) Two halves:
+`record` is **carried, in any position and to any depth**, and runs against the
+real backend in `checks.backend`. A `tuple` and a `variant` are what is left of
+this section: the tuple because nothing names it, the variant because of its
+ordinals. (`option` and `result` have their own, cheaper path --- see
+[above](#option-result).)
 
-1. **Our side.** CertiRocq assigns constructor ordinals *separately per class* —
-   `match_ordinals_with_tag` (`theories/Glue/glue.v:947-960`) walks constructors
-   keeping independent boxed and unboxed counters. WIT's single case index
-   therefore needs a per-case translation table, not an offset. That function is
-   the thing to port.
-2. **Their side.** Canonical-ABI record and variant layout: discriminant size,
-   alignment as the max of field alignments, payload offset, total size. This
-   must match `wasm-tools` byte for byte or `wasmtime` silently reads garbage —
-   which is exactly why the tool computes it with `wit_parser::SizeAlign`, the
-   same code `wasm-tools component new` uses, instead of reimplementing it.
+**A record is one boxed constructor.** CertiRocq represents a constructor of
+arity *n* as `[ord, f₀, …, fₙ₋₁]` (`LambdaANF_to_Wasm.v:161`), and a WIT
+`record` is a named type with exactly one, so `Repr::Record` is that block,
+`interface.v` declares a Rocq `Record` whose fields are the projections, and
+the gate walks the fields with nothing left to say about the record itself ---
+except how many of them there are. [None](#record-empty) the component model
+cannot encode, and [one](#record-unboxed) the backend does not box, so neither
+is the block above; both are refused, at any depth.
 
-`record` and `tuple` are the ones that matter most, since a user-defined record
-is how any multi-field value crosses the boundary. A single-constructor
-inductive of arity *n* boxes as `[ord, f₀, …, fₙ₋₁]`, so the Rocq side is
-straightforward; the canonical-ABI side is where the care goes.
+Three things that shape settles:
 
-**There is a target to build against.** [`examples/record`](examples/record) is
-the whole pipeline for
+- **There is no ordinal to get wrong.** Ordinals are assigned per class and
+  from zero in declaration order, so a type with one constructor has it as the
+  zeroth of whichever class it lands in --- `repr.rs`'s `SINGLE_CTOR_ORDINAL`,
+  the one constant there that is *not* measured, because the remapping that
+  makes `bool` the exception is a permutation and a permutation of one thing is
+  the identity. It is still written rather than assumed: the compiled
+  projections load it and trap on anything else, which an adapter tested over
+  a zeroed page would never find out.
+- **Two views of a field, agreeing by construction.** The canonical-ABI offset
+  comes from `SizeAlign::field_offsets`, the code `wasm-tools component new`
+  uses, so a field the adapter writes at offset 8 is the field the component
+  reads at offset 8. The Rocq cell holds the field as CertiRocq holds it,
+  which for a boxed field is a pointer to its payload --- so a `u64` field is
+  two loads, not one, and a field that is itself a record or a sum stays a
+  pointer, because those conversions read through it themselves.
+- **Flat values, not fields.** A record flattens by concatenating its fields'
+  flattenings, so a `u64` field's range check is *unguarded*: every field is
+  part of every value of the type, unlike a sum's payload, which is only there
+  when its case was the one sent. And what the flat-params limit counts
+  ([`E-ARITY-FLAT`](#arity)) is the total, so a record of nine `u64` fields
+  hits the limit that seventeen `u64` parameters do.
+
+**The reference, and the generator held to it.**
+[`examples/record`](examples/record) is the whole pipeline for
 
 ```wit
 record span { start: u64, byte-length: u64 }
 export grow: func(s: span) -> result<span, error>;
 ```
 
-hand-written, measured against a module the real CertiRocq compiled, and
-running --- `checks.smoke` holds it to its six answers. `checks.generated`
-holds the generator to *refusing* it, with `E-STRUCTURED`, until this section
-is done, so the day the gate starts accepting records is the day that check
-asks for the emitter to match the example token for token.
-
-Four things the record example settles, none of them guessable from the
-sources:
+hand-written before the emitter, measured against a module the real CertiRocq
+compiled, and running --- `checks.smoke` holds it to its six answers, and
+`checks.generated` now holds the emitter to its `interface.v`, `extraction.v`
+and `adapter.wat` token for token, so it is the independent check on the
+output rather than a target ahead of it. Four things it settles, none of them
+guessable from the sources:
 
 - A WIT record of two `u64`s **flattens** into two core `i64` parameters, so
   nothing arrives by pointer and the adapter has to *build* the Rocq value:
@@ -766,14 +794,23 @@ sources:
   component answers `ok({start: 0, byte-length: 0})`. `plus1`'s stub cannot
   reach that branch.
 
-[`examples/variant`](examples/variant) is the other half, for
+**What is left.**
+
+*The `variant`.* The harder of the two `E-STRUCTURED` still names. Its cases mix
+payload-carrying and payload-less ones, and CertiRocq numbers the two kinds in
+independent classes --- `match_ordinals_with_tag`
+(`theories/Glue/glue.v:947-960`) walks the constructors keeping a boxed and an
+unboxed counter --- so WIT's single case index needs a per-case translation
+table, not an offset. That function is the thing to port.
+
+[`examples/variant`](examples/variant) is the reference, for
 
 ```wit
 variant byte-count { unknown, exactly(u64), at-least(u64), too-big }
 export add-byte: func(c: byte-count) -> result<byte-count, error>;
 ```
 
-and it is the one that makes the per-class ordinals visible:
+and it is what makes the per-class ordinals visible:
 
 | WIT discriminant | case | CertiRocq |
 | --- | --- | --- |
@@ -797,6 +834,87 @@ runs, and lies. Two further things it settles:
   nor either ordinal, so the adapter's lowering does too. An adapter more
   forgiving than the module it is linked into turns a representation that has
   drifted into a wrong answer instead of a stop.
+
+*The `tuple`.* The easier one, in that a `tuple<u64, u64>` lays out and
+flattens exactly as a two-field record does, so the plan and the emitters
+would carry a pair as `Repr::Record` with positional field names. What is
+missing is a *name*, and for more than two fields a shape. A WIT
+`record` is a named type, so `interface.v` can declare a Rocq `Record` for it
+and `impl.v` can mention it; an anonymous tuple has no name to declare, and
+Rocq's own `prod` is a one-field-at-a-time nesting --- `A * B * C` is
+`(A * B) * C` --- so a three-tuple is two blocks, not one, and the projections
+are `fst`/`snd` chains rather than named fields. Either the generator invents
+a name per tuple (and then two structurally equal tuples in one world have to
+agree on it) or it emits the `prod` nesting and the plan grows a representation
+for it. Neither is decided, and nothing needs a tuple yet.
+
+### <a id="record-unboxed"></a>A record with one field — `E-RECORD-UNBOXED`, phase 3
+
+```wit
+record wrapper { value: u64 }
+export unwrap: func(w: wrapper) -> result<u64, error>;
+```
+
+The block above is what a constructor of arity *n* looks like for *n ≥ 2*. For
+*n = 1* with one constructor, erasure takes the block away: the value **is** the
+field. `checks.backend` found this the slow way --- `record-nested` with a
+one-field `inner` assembled, ran, and answered
+
+```console
+$ wasmtime run --invoke 'bump({i: {a: 1}, b: 2})' rocq-world.comp.wasm
+ok({i: {a: 1}, b: 12})     # wanted ok({i: {a: 2}, b: 12})
+```
+
+`b` right, `a` untouched. The adapter had built `[0, &inner_block, &b]` and the
+compiled `a (i o) + 1` read the *header* of `inner_block` as the int, added one
+to it, and the lift read the caller's original box back out.
+
+The module CertiRocq compiles says it plainly. For `record outer { i: inner; b:
+int }` there are two projections, each testing the tag bit, checking ordinal 0
+and loading its cell:
+
+```wat
+(func $3 (param $0 i32)              ;; _2__f_case_known_197 -- `i`
+ (if (i32.eqz (i32.and (local.get $0) (i32.const 1)))
+  (then (if (i32.eq (i32.load (local.get $0)) (i32.const 0))
+    (then (local.set $1 (i32.load (i32.add (local.get $0) (i32.const 4))))
+          ...)
+    (else (unreachable))))
+  (else (unreachable))))
+```
+
+For the one-field `inner` there is **no projection function at all**, and no
+tag test: `a (i o)` is the pointer the `i` projection returned, loaded as an
+int.
+
+```wat
+(call_indirect $0 (type $0) (local.get $0) (i32.const 3))  ;; i o
+(local.set $1 (global.get $global$2))
+...
+(i64.add (i64.load align=4 (local.get $1))                 ;; a (i o)
+         (i64.load align=4 (local.get $2)))                ;; the boxed 1
+```
+
+So there is no ordinal to write, no cell to write it beside, and no trap to
+catch the adapter writing one anyway --- which is why the gate refuses the
+shape instead of leaving it to be noticed. Every other disagreement between
+the adapter and the backend in this repo stops the component; this one answers.
+
+What it takes to lift is a representation, not a test: a `Repr` variant for a
+transparent record, so that the thirty-odd places that match on `Repr::Record`
+(the plan, both converters, the adapter and the round trip) are made to say
+what they do with it by the compiler rather than by inspection, and a claim in
+`repr.rs` with its measurement in `measured.rs` and
+`checks/representation.py` --- the unboxing is the backend's choice and may
+move. Its lift and lower are then the field's own, unchanged, with the WIT
+record's single flat value passing straight through.
+
+Until then both `bad/record-single.wit` and `bad/record-single-nested.wit` are
+refused --- the nested one because the field position is where this was found,
+and the site names the field (`` export bump: param `o`, field `i` ``) so the
+line to change is on screen. `a_one_field_record_is_not_a_block` pins it. The
+answer for a caller today is a second field, or the field's own type in the
+record's place, which is what the one-field record means anyway.
 
 ### <a id="f64"></a>`f64` — `E-FLOAT`, phase 4
 
@@ -1124,6 +1242,40 @@ Not deferred features — there is nothing to build.
 A world with no exported function gives CertiRocq nothing to compile. Note that
 this also fires alongside `E-EXPORT-INTERFACE`, when every export the world has
 is a namespaced interface.
+
+### <a id="record-empty"></a>A record with no fields — `E-RECORD-EMPTY`
+
+```wit
+record nothing { }
+export echo: func(n: nothing) -> result<nothing, error>;
+```
+
+Nothing about the *representation* is in the way. A record with no fields has a
+nullary constructor, so the value is an immediate — the same shape every `enum`
+case already has — and the canonical ABI flattens it to no core values at all,
+so the export would take a WIT parameter and no wasm one. The emitters would
+have had no new case to grow.
+
+What refuses it is the component model, whose `record` has at least one field.
+`wit-parser` accepts the declaration, so the whole build runs: the adapter is
+emitted, the Rocq side compiles, `wasm-merge` resolves every import, and then
+
+```console
+$ wasm-tools component new rocq-world.embed.wasm -o rocq-world.comp.wasm
+error: decoding custom section component-type
+
+Caused by:
+    0: record type must have at least one field (at offset 0x27)
+```
+
+— an offset into a custom section, four build steps after the line responsible,
+reported by a tool that never saw the WIT file. So the gate says it instead,
+while the field list is still on screen. `an_empty_record_has_no_component_type`
+pins that, and `bad/record-empty.wit` is the world above.
+
+The answer for a caller who wants one is that a record carrying no information
+is one the export does not need to take. There is nothing to build here unless
+the component model grows a type for it.
 
 ### <a id="unresolved"></a>Unresolved world — `E-UNKNOWN`
 

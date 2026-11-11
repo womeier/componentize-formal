@@ -33,7 +33,7 @@
 
 use std::fmt::Write;
 
-use super::plan::{Cells, CtorTag, Repr, Slot, Sum, SumCase};
+use super::plan::{Cells, CtorTag, Record, Repr, Slot, Sum, SumCase};
 use crate::repr;
 
 /// One flat value of the canonical ABI: the expression yielding it, and the
@@ -130,6 +130,11 @@ pub fn core_type(repr: &Repr) -> &'static str {
         Repr::Int63 => "i64",
         Repr::Bool | Repr::Enum { .. } => "i32",
         Repr::Sum(sum) => unreachable!("`{}` is carried in several core values, not one", sum.wit),
+        Repr::Record(rec) => unreachable!(
+            "`{}` is carried in {} core value(s), not one",
+            rec.wit,
+            rec.fields.len()
+        ),
     }
 }
 
@@ -193,7 +198,69 @@ pub fn to_rocq(repr: &Repr, slots: &[Flat], cells: &Cells, base: Base) -> Conver
             at_width(&slots[0], "i32")
         )),
         Repr::Sum(sum) => lower_sum(sum, slots, cells, base),
+        Repr::Record(rec) => lower_record(rec, slots, cells, base),
     }
+}
+
+/// A record, built from its fields' flat values.
+///
+/// No branch, unlike a sum: a record has one constructor, so there is nothing
+/// to select and the value is always the block's address. What it does have
+/// is an *order*. Every field's own value goes down first, because the cell
+/// pointing at it cannot be written before there is something to point at;
+/// then the ordinal, then the cells. The ordinal is written rather than left
+/// to whatever the heap held -- the compiled projections load it and trap on
+/// anything else, which is a thing an adapter tested over a zeroed page would
+/// never find out.
+fn lower_record(rec: &Record, slots: &[Flat], cells: &Cells, base: Base) -> Conversion {
+    // No fields is a nullary constructor, so the value *is* the immediate and
+    // no cell is involved. The same number `None` is, for the same reason.
+    if rec.fields.is_empty() {
+        return Conversion::pure(format!(
+            "(i32.const {})",
+            repr::nullary_immediate(repr::SINGLE_CTOR_ORDINAL)
+        ));
+    }
+    let Cells::Block { at, inner } = cells else {
+        unreachable!("a record needs a block to build its constructor in")
+    };
+
+    let mut prologue = Vec::new();
+    let mut pointers = Vec::new();
+    let mut rest = slots;
+    for (i, (field, cells)) in rec.fields.iter().zip(inner).enumerate() {
+        // Each field takes its own flat values off the front: the canonical
+        // ABI flattens a record by concatenating them, so the split is the
+        // field's own flattening rather than a count of fields.
+        let take = flat_count(&field.repr);
+        let built = to_rocq(&field.repr, &rest[..take], cells, base);
+        rest = &rest[take..];
+        prologue.extend(built.prologue);
+        pointers.push(base.store("i32.store", at + rec.cell(i), &built.value));
+    }
+    prologue.push(base.store(
+        "i32.store",
+        at + repr::BOXED_ORDINAL_OFFSET,
+        &format!("(i32.const {})", repr::SINGLE_CTOR_ORDINAL),
+    ));
+    prologue.extend(pointers);
+    Conversion {
+        prologue,
+        value: base.addr(*at),
+    }
+}
+
+/// How many flat values a type takes, for splitting a record's slots between
+/// its fields.
+///
+/// `Repr::flatten` can refuse a join it has no rule for, and did not: the
+/// plan was built before any of this is emitted, and building it flattens
+/// every type in the signature. So a failure here is a bug rather than a
+/// condition.
+fn flat_count(repr: &Repr) -> usize {
+    repr.flatten()
+        .expect("the plan flattened this type when it was built")
+        .len()
 }
 
 /// A two-case sum, built from the discriminant and the payload slots.
@@ -208,13 +275,13 @@ pub fn to_rocq(repr: &Repr, slots: &[Flat], cells: &Cells, base: Base) -> Conver
 /// means. What they do not share is their payload cells: those are reserved
 /// separately ([`Repr::cells`]).
 fn lower_sum(sum: &Sum, slots: &[Flat], cells: &Cells, base: Base) -> Conversion {
-    let Cells::Block { at, cases } = cells else {
+    let Cells::Block { at, inner } = cells else {
         unreachable!("a sum needs a block to build its constructor in")
     };
     let discriminant = at_width(&slots[0], "i32");
 
     let mut branches = Vec::new();
-    for (case, cells) in sum.cases.iter().zip(cases) {
+    for (case, cells) in sum.cases.iter().zip(inner) {
         let mut body = Vec::new();
         let value = match (&case.payload, case.tag) {
             // Nothing to build: the constructor *is* the immediate.
@@ -284,6 +351,10 @@ pub fn from_rocq(repr: &Repr, value: &str) -> Conversion {
              use store_canonical",
             sum.wit
         ),
+        Repr::Record(rec) => unreachable!(
+            "`{}` is its fields at byte offsets, not a core value; use store_canonical",
+            rec.wit
+        ),
     }
 }
 
@@ -309,7 +380,41 @@ pub fn store_canonical(repr: &Repr, dest: Base, offset: u32, value: &str) -> Vec
             vec![dest.store(payload_store(repr), offset, value)]
         }
         Repr::Sum(sum) => lift_sum(sum, dest, offset, value),
+        Repr::Record(rec) => lift_record(rec, dest, offset, value),
     }
+}
+
+/// Write each of a record's fields where the canonical ABI reads it.
+///
+/// One statement group per field and no test at all: a record has one
+/// constructor, so there is nothing to ask about the value -- which is the
+/// whole difference from [`lift_sum`], where the tag bit decides what is
+/// there to read.
+///
+/// Each field is *two* steps, and the first is easy to miss. The cell holds
+/// the field as CertiRocq holds it, which for a boxed field is a pointer to
+/// its payload -- so a `u64` field is `(i64.load (i32.load offset=4 ptr))`,
+/// not one load. A field that is itself a record or a sum is left as the
+/// pointer, because the conversion for those reads through it themselves.
+fn lift_record(rec: &Record, dest: Base, offset: u32, value: &str) -> Vec<String> {
+    // Nothing to write: a record with no fields is zero bytes wide in the
+    // canonical ABI, and the immediate it arrives as carries nothing to put
+    // in them.
+    let mut out = Vec::new();
+    for (i, field) in rec.fields.iter().enumerate() {
+        let cell = Base(value).load("i32.load", rec.cell(i));
+        let core = match &field.repr {
+            Repr::Sum(_) | Repr::Record(_) => cell,
+            scalar => from_rocq(scalar, &cell).value,
+        };
+        out.extend(store_canonical(
+            &field.repr,
+            dest,
+            offset + field.offset,
+            &core,
+        ));
+    }
+    out
 }
 
 /// Write a sum's discriminant, and its payload if the case it holds has one.
@@ -344,7 +449,7 @@ fn lift_sum(sum: &Sum, dest: Base, offset: u32, value: &str) -> Vec<String> {
             // being stored -- unless it is another sum, which has none.
             let field = Base(value).load("i32.load", repr::boxed_field_offset(0));
             let core = match payload {
-                Repr::Sum(_) => field,
+                Repr::Sum(_) | Repr::Record(_) => field,
                 scalar => from_rocq(scalar, &field).value,
             };
             lines.extend(store_canonical(payload, dest, offset + sum.payload, &core));
@@ -402,6 +507,12 @@ pub fn payload_store(repr: &Repr) -> &'static str {
         Repr::Bool => store_op(wit_parser::Int::U8),
         Repr::Enum { tag, .. } => store_op(*tag),
         Repr::Sum(sum) => store_op(sum.tag),
+        // Never asked: a record writes its own fields, each with the store
+        // its own representation wants, so there is no single width for the
+        // record as a whole.
+        Repr::Record(rec) => {
+            unreachable!("`{}` is stored field by field, not as one value", rec.wit)
+        }
     }
 }
 

@@ -1,0 +1,11 @@
+package local:bad;
+
+// The record is carried and the field is not, so the refusal has to come from
+// inside: the gate walks a record's fields, and a tuple in one of them is
+// turned away under the field's own name rather than passed over because the
+// type around it was fine.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  record corner { at: tuple<u64, u64>, n: u64 }
+  export go: func(c: corner) -> result<u64, error>;
+}
