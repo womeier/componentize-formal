@@ -277,9 +277,9 @@ The limit counts flat values, not parameters: nine `option<u64>` parameters hit
 it, and so does a single record of nine `u64` fields. Raised in the planner
 rather than the gate because it needs the layout of all parameters together.
 
-Only *n* = 2 has been run end to end. The emitter is written for any *n* up to
-the flat limit and the three-parameter adapter parses, but three has not been
-through a real backend.
+Six parameters run end to end (`checks.backend`'s `arity6`). The emitter is
+written for any *n* up to the flat limit and the plan is tested to nine, but
+nothing past six has been through a real backend.
 
 ### <a id="multi-export"></a>Several exports — `E-MULTI-EXPORT`, phase 2
 
