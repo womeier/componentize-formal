@@ -1,0 +1,11 @@
+package local:backend;
+
+// Two parameters, which the backend curries: the adapter applies one argument
+// at a time, reading the next closure out of `result` in between
+// (TODO.md#arity). Subtraction rather than addition because it is not
+// commutative, so applying the arguments in the wrong order is an answer this
+// case can tell apart.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export sub: func(a: u64, b: u64) -> result<u64, error>;
+}

@@ -1,0 +1,9 @@
+package local:backend;
+
+// A boxed primitive int, in both positions: `succ` reads its argument through
+// a pointer and leaves its result behind another one, and `+1` is asymmetric
+// enough that a conversion pair wrong in cancelling ways cannot hide in it.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export succ: func(n: u64) -> result<u64, error>;
+}

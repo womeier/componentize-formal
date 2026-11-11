@@ -340,6 +340,36 @@
             touch $out
           '';
 
+        # Layer 2 of the same thing: the module has to *run*. One generated
+        # world per representation per position, compiled with the real
+        # CertiRocq, merged with its generated adapter and invoked -- which is
+        # the one step the stub path cannot take, because a stub is written
+        # against the same repr.rs the adapter is and agrees with it by
+        # construction. Also the only place the out-of-memory channel fires on
+        # a real allocator rather than a poisoned bump pointer.
+        #
+        # `${./checks}/backend.py` rather than `${./checks/backend.py}`
+        # because it imports the representation list out of roundtrip.py,
+        # which has to be beside it in the store.
+        backend = pkgs.runCommand "backend-behaviour"
+          {
+            nativeBuildInputs = [
+              (rocqPkgs pkgs).coq
+              (certirocqFor pkgs)
+              pkgs.python3
+              pkgs.gnumake
+              pkgs.wasm-tools
+              pkgs.binaryen
+              pkgs.wasmtime
+            ];
+          } ''
+            python3 ${./checks}/backend.py \
+              --generator ${bindgen}/bin/componentize-formal \
+              --cases ${./checks}/backend \
+              --plan ${./bindgen/src/emit/plan.rs}
+            touch $out
+          '';
+
         # The generator against the hand-written examples: same code, then the
         # same answers out of a component assembled from what it wrote. The
         # examples are never regenerated -- they were written and run before

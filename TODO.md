@@ -282,12 +282,12 @@ by value instead of by address --- a component that assembles, runs, and
 answers nonsense.
 
 What it does not cover is the `enum` branch of the emitter, because no example
-under `examples/` has an `enum` parameter: the two that exist take a `u64` and a
-`bool`. That branch has been built and run by hand --- a generated world with
-`enum colour { red, green, blue }` answers `next(red) = ok(green)`,
-`next(green) = ok(blue)`, `next(blue) = ok(red)` against a stub --- but by hand
-is not a check, and `checks.generated` only parses the adapter it generates for
-the `enum` fixtures. A third example closes it.
+under `examples/` has an `enum` parameter: the two that exist take a `u64` and
+a `bool`, so `checks.generated` only parses the adapter it generates for the
+`enum` fixtures. Layer 2 below now assembles `enum` components and reads
+answers out of them, which is the risk; what is still missing here is the
+*reference* — a hand-written `enum` example, written before the emitter and
+held to token for token. A third example closes that.
 
 **1e — the conversions are inverses.** `checks.roundtrip`
 ([`checks/roundtrip.py`](checks/roundtrip.py)) takes the pair of conversions
@@ -307,28 +307,51 @@ recomputed in the check rather than read from the generator. What it still
 does not do is assemble an `enum` component and read an answer out of it, so a
 third example is still what closes 1d.
 
-**2 — the backend's behaviour, phase 1.** The rest needs the module to *run*:
-one case per representation, each a Rocq definition plus a world through the
-whole pipeline — `rocq c`, `wasm-merge`, `component embed`,
-`component new`, `wasmtime run --invoke` — asserting the value returned:
+**2 — the backend's behaviour.** The rest needs the module to *run*, and now
+does. `checks.backend` ([`checks/backend.py`](checks/backend.py)) generates a
+world per case, compiles it with the real CertiRocq, merges it with its own
+generated adapter and invokes the component, asserting the value that comes
+back — `rocq c`, `wasm-merge`, `component embed`, `component new`, `wasmtime
+run --invoke`, driven through the generated `Makefile` rather than around it.
 
-| Case | Pins |
-| --- | --- |
-| `fun b => b` at `bool` | the tagged immediate, both ways |
-| an `enum` of three, returning the first, a middle and the last | nullary ordinals being the declaration index |
-| `fun n => n` at `u64`, with 0 and 2⁶³−1 | the boxed primitive int, and the range guard |
-| a function returning `None`, and one returning `Some` | `option`'s per-class ordinals |
-| a deliberately allocating function | the out-of-memory channel actually firing |
-| one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged; lands with the reset, not before |
-| two and three exports | `MkExports` field offsets (phase 2) |
-| `f64` round-trip | the boxed float, once `wasm-prim-floats` lands (phase 4) |
+This is the one step no other check takes. A stub under `examples/*/stub` is
+written against the same `repr.rs` the adapter is, so it agrees with the
+adapter by construction, and 1c and 1d can only catch an adapter that
+disagrees with itself. Here the other half of the merge is whatever CertiRocq
+emitted.
 
-It belongs in `nix flake check` beside 1b --- otherwise a CertiRocq bump lands
-without anyone noticing the offsets moved --- and it cannot be written before the
-generator emits adapters. What it can no longer assume is a CertiRocq that
-comes free from an upstream cache; it comes from one this project owns and
-refills, which is what keeps it on the per-push path at all: see [the per-push
-path](#per-push) below, which the table export cost us.
+| Case | Pins | |
+| --- | --- | --- |
+| `succ` at `u64`, with 0, 2⁶³−1 and 2⁶³ | the boxed primitive int in both positions, the modular wrap, and the range guard | runs |
+| `to-int`, `is-zero` | the tagged immediate, each direction paired with a result of another representation | runs |
+| `is-green`, `colour-of` | nullary ordinals being the declaration index — first case, a middle one, the last | runs |
+| `sub` on two `u64` | one application per argument, in declaration order ([#arity](#arity)) | runs |
+| any of them with the heap capped at the module's declared minimum | the out-of-memory channel firing on the real allocator, not on a poisoned bump pointer | runs |
+| a function returning `None`, and one returning `Some` | `option`'s per-class ordinals | with [`option`](#option-result) |
+| one export called repeatedly | the [heap reset](#heap-reset) — `mem_ptr` back to its snapshot, `[0, S)` unchanged | with the reset |
+| two and three exports | `MkExports` field offsets | with [several exports](#multi-export) |
+| `f64` round-trip | the boxed float | with `wasm-prim-floats` (phase 4) |
+
+The pairings are chosen so that a wrong conversion cannot hide behind itself.
+`is-green` returns a `bool` rather than cycling red → green → blue, because a
+cycle survives both conversions being shifted by the same wrong amount — a
+rotation commutes with a rotation — while asking which case it is does not;
+`sub` is not commutative, so applying the arguments in the wrong order is an
+answer the check can see. Which positions have to be covered is derived from
+`plan.rs`'s `Repr`, not written out, so a fourth representation fails here
+until a case exists for it as a parameter and as a result.
+
+The out-of-memory row needs no allocating Rocq program, which would have to
+ask for the better part of two gigabytes: the component is invoked again with
+the host granting exactly the pages the module declares as its minimum, so the
+first `memory.grow` the allocator asks for fails, the backend sets
+`out_of_mem`, and the adapter has to answer `err(out-of-memory)` rather than
+trap or return whatever `result` holds.
+
+What it costs is a CertiRocq on the per-push path, which
+`checks.representation` already put there and the cache this project owns is
+what pays for: see [the per-push path](#per-push). The six cases take seconds
+once CertiRocq is substituted — they are four-line definitions.
 
 For the canonical-ABI half, the equivalent check is differential: diff generated
 layouts against `cargo component`'s for the matching Rust signature — see
@@ -390,7 +413,7 @@ for MetaRocq, the build it existed to protect. It checks what is left ---
 CompCert, and the inputs MetaRocq is built from --- and says in its docstring
 what it gave up.
 
-**It compiles and runs.** All eight checks pass, and every example answers
+**It compiles and runs.** All nine checks pass, and every example answers
 correctly through `make run`: CertiRocq's own module linked to the adapter,
 which could not be assembled at all before the export existed. Two things
 moved with the pin --- the plugin's flags are double-dashed now, `-file`

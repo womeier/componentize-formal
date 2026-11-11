@@ -98,6 +98,13 @@ generated one and requires the same answers from `wasmtime`. The first thing
 that check found was a boxed `u64` passed by value instead of by address — a
 component that assembles, runs, and answers nonsense.
 
+Those components link against the examples' stubs, which stand in for
+CertiRocq's output so the check needs no Rocq. `checks.backend` is the other
+half: a generated world per representation compiled with the real CertiRocq,
+merged with its generated adapter, and invoked — including one invocation with
+the heap capped at the module's declared minimum, where the real allocator
+fails and the adapter has to answer `err(out-of-memory)`.
+
 Some examples run *ahead* of the gate. [`record`](examples/record) and
 [`variant`](examples/variant) are the whole pipeline for constructs `generate`
 still refuses — hand-written, measured against modules the real CertiRocq
@@ -187,11 +194,12 @@ so a green checkout is a green branch:
 | `clippy`, `fmt` | `clippy -D warnings`, `cargo fmt --check` |
 | `abi-version` | `wit-parser`'s version must match the `wasm-tools` that ships, since they must compute the same canonical-ABI layout |
 | `representation` | compiles Rocq functions with the real CertiRocq and checks the emitted modules against every claim in `repr.rs`, including the constructor immediates and the independent boxed/unboxed ordinals |
+| `backend` | compiles a world per representation with the real CertiRocq, merges it with its generated adapter, and invokes the component: the one check where both halves of the merge are real, and the only place the out-of-memory channel fires on the actual allocator |
 | `smoke` | assembles each example into a component and checks what `wasmtime` says it answers |
 | `generated` | generates for each example's world and requires the result to be the hand-written files token for token, then assembles the generated adapter and requires the same answers. For an example ahead of the gate, requires instead that the generator refuses it with the right code and writes nothing |
 | `roundtrip` | emits each conversion in both orders and runs it under `wasmtime`, requiring the value back unchanged. An export adapter uses each direction in one position only; the other order is the one [function imports](TODO.md#imports) will need, so it is run before there is anything that needs it |
 
-The last five are Python scripts under [`checks/`](checks) and run standalone
+The last six are Python scripts under [`checks/`](checks) and run standalone
 in `nix develop` as well, which is often what you want while changing
 `repr.rs`. They guard against the same thing: a mismatch there does not break
 the build, it makes the adapter read the wrong bytes and return plausible

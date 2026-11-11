@@ -1,0 +1,8 @@
+package local:backend;
+
+// A `bool` argument with a result of another representation, so that an error
+// in the immediate's tag cannot be undone by the same error on the way out.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export to-int: func(b: bool) -> result<u64, error>;
+}

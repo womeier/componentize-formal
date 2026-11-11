@@ -1,0 +1,10 @@
+package local:backend;
+
+// An `enum` result, with a boxed argument selecting the case: the first, a
+// middle and the last, which is what pins the nullary ordinal to the
+// declaration index rather than to whatever the first case happens to be.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum colour { red, green, blue }
+  export colour-of: func(n: u64) -> result<colour, error>;
+}

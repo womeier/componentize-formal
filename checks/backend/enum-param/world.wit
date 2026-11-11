@@ -1,0 +1,15 @@
+package local:backend;
+
+// An `enum` argument. No example under examples/ has one, so until this case
+// existed the emitter's `enum` parameter branch had never run against the real
+// backend -- only against a stub, and only by hand (TODO.md#representation).
+//
+// The result is a `bool` on purpose. `next: func(c: colour) -> result<colour,
+// error>` cycling red -> green -> blue would pass even with both conversions
+// shifted by the same wrong amount, because a rotation commutes with a
+// rotation. Asking which case it *is* does not.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum colour { red, green, blue }
+  export is-green: func(c: colour) -> result<bool, error>;
+}

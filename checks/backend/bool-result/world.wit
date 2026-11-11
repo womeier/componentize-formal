@@ -1,0 +1,7 @@
+package local:backend;
+
+// The other direction: the `bool` is the result and the argument is boxed.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export is-zero: func(n: u64) -> result<bool, error>;
+}
