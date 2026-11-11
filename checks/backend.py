@@ -27,6 +27,10 @@ conversion in one direction only:
                         a middle one and the last
     arity   sub         two parameters, which the backend curries: one
                         application per argument (TODO.md#arity)
+    arity6  mix         six parameters, so six applications in a chain --
+                        where a box sized once and shared, so that every
+                        application reads the same cells, is an answer
+                        this case can see six times over (TODO.md#arity)
     record  is-empty    a `record` argument, read through the backend's own
             whole       compiled projections, a `record` result, read back
             bump        through its cells, and a nested one, where a cell of
@@ -250,6 +254,29 @@ EXPECTED: dict[str, dict] = {
             # Each parameter is its own check: one being in range says
             # nothing about the other.
             ("0, 9223372036854775808", "err(out-of-range)"),
+        ],
+    },
+    # Six, because the plan-level tests stop at asserting on the emitted text
+    # and this is where the applications run for real. The risk the plan tests
+    # name -- a box sized once and shared, where the first application
+    # captures its cells by address and the last one can still be reading
+    # them -- is an answer the alternating sum shows, not something
+    # `make -n` can catch.
+    "arity6": {
+        "export": "mix",
+        "pins": [("Int63", "param"), ("Int63", "result")],
+        "answers": [
+            ("12, 10, 8, 6, 4, 2", "ok(6)"),
+            # Not 6: `c` and `d` exchanged, which a plain sum would not
+            # notice. Every argument reaches its own parameter or the answer
+            # says so.
+            ("12, 10, 6, 8, 4, 2", "ok(2)"),
+            # Each parameter is its own check: one being in range says
+            # nothing about the other five. First, a middle one and the last,
+            # so the guard is not somewhere it only works.
+            ("9223372036854775808, 10, 8, 6, 4, 2", "err(out-of-range)"),
+            ("12, 10, 8, 9223372036854775808, 4, 2", "err(out-of-range)"),
+            ("12, 10, 8, 6, 4, 9223372036854775808", "err(out-of-range)"),
         ],
     },
 }

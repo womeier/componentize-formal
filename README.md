@@ -6,9 +6,8 @@ This project is a WIP. Don't expect a stable CLI interface.
 
 ## Overview
 This tool allows developing formally-verified [Wasm components](https://component-model.bytecodealliance.org/) in Rocq.
-What componentize-js is to JavaScript, this tool is for theorem provers like Rocq or Lean.
-It requires a `.wit` file describing the Wasm component interface, for which it generates a
-project scaffolding with Rocq functions of the respective types, and a setup to build a Wasm component corresponding to the interface.
+What [ComponentizeJS](https://github.com/bytecodealliance/componentize-js) is to JavaScript, this tool is for theorem provers like Rocq or Lean.
+It requires a `.wit` file describing the Wasm component interface, for which it generates a project scaffolding and build setup.
 Support for Lean and Agda may be added in the future, since they are supported [Peregrine](https://peregrine-project.github.io/) frontends.
 
 ## Verification status
@@ -94,13 +93,7 @@ The following features are currently supported.
 | Agda | future work | same route through λ□, but two frontends is the commitment |
 | verified glue | [not supported](TODO.md#verified-glue) | the adapter is trusted |
 
-## Building
-
-`nix develop` provides Rocq, CertiRocq, `wasm-tools`, `binaryen` (`wasm-merge`),
-`wasmtime`, and a Rust toolchain; `nix develop .#bindgen` is the same without
-the Rocq package set, for working on the generator alone.
-`nix build .#componentize-formal` builds the generator.
-
+## Testing
 `nix flake check` runs the whole gate, and CI does nothing but run that command,
 so a green checkout is a green branch:
 

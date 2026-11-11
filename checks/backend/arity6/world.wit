@@ -1,0 +1,13 @@
+package local:backend;
+
+// Six parameters, which the backend curries into six applications: a box and
+// a `call_indirect` each, the next closure read out of `result` in between
+// (TODO.md#arity). An alternating sum rather than a plain one, so no two
+// argument positions are interchangeable: with six distinct values, an
+// argument applied to the wrong parameter is an answer this case can see --
+// and a box sized once and shared, where every application reads the same
+// cells, is one it can see six times over.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  export mix: func(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> result<u64, error>;
+}
