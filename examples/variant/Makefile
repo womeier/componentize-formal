@@ -4,7 +4,7 @@
 # add-byte beyond the file names.
 
 WASM_NAME  := rocq-add-byte
-MERGE_OPTS := --enable-reference-types
+MERGE_OPTS := --enable-reference-types --enable-tail-call
 
 # WAVE spells a variant case `case(payload)`, and bare for a case that carries
 # none. The parentheses need quoting, so each call is its own line rather than

@@ -5,7 +5,7 @@
 
 WASM_NAME  := rocq-negb
 INVOKE     := true false
-MERGE_OPTS := --enable-reference-types
+MERGE_OPTS := --enable-reference-types --enable-tail-call
 
 .PHONY: all run run-stub run-stub-oom clean
 all: run-stub

@@ -1207,3 +1207,363 @@ fn seventeen_scalars_are_past_the_flat_limit() {
     assert!(err.contains("E-ARITY-FLAT"), "{err}");
     assert!(err.contains("17 parameter(s) take 17 flat values"), "{err}");
 }
+
+const SPAN: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  record span { start: u64, byte-length: u64 }
+  export grow: func(s: span) -> result<span, error>;
+}
+"#;
+
+const NESTED: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  record inner { a: u64, z: u64 }
+  record outer { i: inner, b: u64 }
+  export bump: func(o: outer) -> result<outer, error>;
+}
+"#;
+
+const CURSOR: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  record cursor { pos: option<u64>, seen: bool }
+  export step: func(c: option<cursor>) -> result<option<cursor>, error>;
+}
+"#;
+
+const PAINT: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum colour { red, green, blue }
+  record paint { hue: colour, amount: u64 }
+  export mix: func(p: paint) -> result<paint, error>;
+}
+"#;
+
+const NOTHING: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  record nothing { }
+  export id: func(n: nothing) -> result<nothing, error>;
+}
+"#;
+
+/// A record is one Rocq declaration however many times the world mentions it,
+/// and the fields keep the projection names that declaration gave them.
+///
+/// Worth asserting because the second mention takes a different path: the
+/// names are allocated once, against the same table every export name and
+/// parameter name is allocated against, so the obvious implementation
+/// declares `span` twice and the second declaration's fields are refused as
+/// already taken. `examples/record` uses `span` in both positions, so this is
+/// the shape that caught it.
+#[test]
+fn a_record_is_declared_once_however_often_it_is_used() {
+    let plan = plan_for("span", SPAN);
+    assert_eq!(plan.records.len(), 1, "{:?}", plan.records);
+    let decl = &plan.records[0];
+    assert_eq!(decl.rocq_name, "span");
+    assert_eq!(decl.ctor, "mk_span");
+    assert_eq!(
+        decl.fields,
+        [
+            ("start".to_string(), "int".to_string()),
+            ("byte_length".to_string(), "int".to_string())
+        ],
+        "WIT declaration order, with the hyphen the Rocq identifier cannot have"
+    );
+    assert_eq!(
+        decl.wit_declaration(),
+        "record span { start: u64, byte-length: u64 }"
+    );
+
+    let interface = emit::rocq::interface(&plan);
+    assert_eq!(
+        interface
+            .matches("Record span := mk_span { start : int ; byte_length : int }.")
+            .count(),
+        1,
+        "{interface}"
+    );
+    assert!(
+        interface.contains("Parameter grow : span -> span."),
+        "{interface}"
+    );
+}
+
+/// Every field of a record is part of every value of it, so a `u64` field's
+/// range check is *unguarded* -- unlike a sum's payload, which is only there
+/// when its case was the one sent.
+///
+/// This is the half of the shape that is easy to get backwards by writing the
+/// record walk against the sum walk: a check guarded by a discriminant that a
+/// record does not have would either not compile or, worse, read a
+/// discriminant out of the field next to it.
+#[test]
+fn a_record_field_is_checked_without_a_guard() {
+    let plan = plan_for("span", SPAN);
+    let adapter = emit::adapter::adapter(&plan);
+    for field in ["s_start", "s_byte_length"] {
+        assert!(
+            adapter.contains(&format!(
+                "(if (i64.lt_s (local.get ${field}) (i64.const 0))\n      (then\n        \
+                 (call $err (local.get $ret) (i32.const 1))"
+            )),
+            "{field} is checked at the top level of the function body:\n{adapter}"
+        );
+    }
+}
+
+/// A field that is a record is the same code applied again, and these are the
+/// numbers that says: one block per level, each level's fields at the offsets
+/// `wit_parser` gives them *inside their own record*, and the cell holding a
+/// record field a pointer to the level below.
+///
+/// The offsets differ at the two levels on purpose. `inner`'s `z` is at 8 and
+/// `outer`'s `b` is at 16, so a walk that used the wrong record's offsets
+/// would land somewhere else rather than somewhere right. Both levels carry
+/// two fields because a one-field record is not a block at all: the backend
+/// erases it to the field, and the gate refuses it
+/// (TODO.md#record-unboxed).
+#[test]
+fn a_record_field_that_is_a_record_is_one_more_level() {
+    let plan = plan_for("nested", NESTED);
+    assert_eq!(
+        slots(&plan.export.params[0]),
+        [("o_i_a", "i64"), ("o_i_z", "i64"), ("o_b", "i64")],
+        "the flattening is the fields' flattenings concatenated, and the \
+         locals are named down the path to each one"
+    );
+    assert_eq!(blocks(&plan), [Some((32, "arg"))]);
+    // The return area is 32. Then, inside the argument's own block: `outer`'s
+    // three cells at 0..12, `inner`'s three at 12..24, and the three boxed
+    // ints the cells point at, at 24..32, 32..40 and 40..48.
+    assert_eq!(plan.export.layout.reserve, 32 + 48);
+
+    let interface = emit::rocq::interface(&plan);
+    assert!(
+        interface.contains("Record inner := mk_inner { a : int ; z : int }."),
+        "{interface}"
+    );
+    assert!(
+        interface.contains("Record outer := mk_outer { i : inner ; b : int }."),
+        "{interface}"
+    );
+    assert!(
+        interface.find("Record inner").unwrap() < interface.find("Record outer").unwrap(),
+        "a field's type is declared before the record using it:\n{interface}"
+    );
+
+    let adapter = emit::adapter::adapter(&plan);
+    // Lifting `i`'s `a` is three loads: the cell holding `inner`, the cell
+    // holding its boxed `a`, then the int. It lands at the payload offset of
+    // `a` within `outer` within the return area, which is 8 + 0 + 0.
+    assert!(
+        adapter.contains(
+            "(i64.store offset=8 (local.get $ret) \
+             (i64.load (i32.load offset=4 (i32.load offset=4 (local.get $val)))))"
+        ),
+        "{adapter}"
+    );
+    // `z` is the same path one cell along, at 8 + 0 + 8 -- so the two levels
+    // contribute a cell each and neither offset stands in for the other.
+    assert!(
+        adapter.contains(
+            "(i64.store offset=16 (local.get $ret) \
+             (i64.load (i32.load offset=8 (i32.load offset=4 (local.get $val)))))"
+        ),
+        "{adapter}"
+    );
+    // And `b` is one load fewer, at 8 + 16.
+    assert!(
+        adapter.contains(
+            "(i64.store offset=24 (local.get $ret) \
+             (i64.load (i32.load offset=8 (local.get $val))))"
+        ),
+        "{adapter}"
+    );
+    // Lowering goes bottom up, so every cell is written after the thing it
+    // points at: the two inner boxes, `inner`, `b`'s box, then `outer`.
+    for store in [
+        "(i64.store offset=24 (local.get $arg) (local.get $o_i_a))",
+        "(i64.store offset=32 (local.get $arg) (local.get $o_i_z))",
+        "(i32.store offset=16 (local.get $arg) (i32.add (local.get $arg) (i32.const 24)))",
+        "(i32.store offset=20 (local.get $arg) (i32.add (local.get $arg) (i32.const 32)))",
+        "(i64.store offset=40 (local.get $arg) (local.get $o_b))",
+        "(i32.store offset=4 (local.get $arg) (i32.add (local.get $arg) (i32.const 12)))",
+        "(i32.store offset=8 (local.get $arg) (i32.add (local.get $arg) (i32.const 40)))",
+    ] {
+        assert!(adapter.contains(store), "{store} is missing:\n{adapter}");
+    }
+    // One ordinal per level, and both written rather than assumed.
+    assert_eq!(
+        adapter.matches("(local.get $arg) (i32.const 0))").count(),
+        2,
+        "an ordinal for `outer` and one for `inner`:\n{adapter}"
+    );
+}
+
+/// The two nestings crossed: a record inside a sum, and a sum inside a
+/// record. Each shape keeps its own rule, which is the point -- a record's
+/// fields are all there, a sum's payload is there only in its case.
+#[test]
+fn a_record_and_a_sum_nest_both_ways() {
+    let plan = plan_for("cursor", CURSOR);
+    assert_eq!(
+        slots(&plan.export.params[0]),
+        [
+            ("c_f0", "i32"),
+            ("c_f1", "i32"),
+            ("c_f2", "i64"),
+            ("c_f3", "i32")
+        ],
+        "the outer discriminant, then `cursor`'s two fields flattened: \
+         `pos`'s discriminant and payload, then `seen`"
+    );
+    assert_eq!(blocks(&plan), [Some((40, "arg"))]);
+    // 40 for the return area, then: the outer `option`'s two cells at 0..8,
+    // `cursor`'s three at 8..20, `pos`'s two at 20..28, and the boxed int at
+    // 28..36. `seen` is an immediate and takes none.
+    assert_eq!(plan.export.layout.reserve, 40 + 36);
+
+    let interface = emit::rocq::interface(&plan);
+    assert!(
+        interface.contains("Record cursor := mk_cursor { pos : option int ; seen : bool }."),
+        "{interface}"
+    );
+
+    let adapter = emit::adapter::adapter(&plan);
+    // The `u64` is two cases down, so its check is reached only when both
+    // discriminants say the payload is there.
+    assert!(
+        adapter.contains(
+            "(if (i32.eq (local.get $c_f0) (i32.const 1))\n      (then\n        \
+             (if (i32.eq (local.get $c_f1) (i32.const 1))\n          (then\n            \
+             (if (i64.lt_s (local.get $c_f2) (i64.const 0))"
+        ),
+        "{adapter}"
+    );
+    // The record is built inside the case that carries it, so nothing is
+    // written for `none` at all.
+    assert!(
+        adapter.contains(
+            "(i32.store offset=4 (local.get $arg) (i32.add (local.get $arg) (i32.const 8)))"
+        ),
+        "the `some` cell points at `cursor`'s block:\n{adapter}"
+    );
+    // Lifting reads `seen` through the record, which is itself behind the
+    // outer `some` cell -- and it is read in the same branch, unguarded,
+    // because a field of a record that is there is there.
+    assert!(
+        adapter.contains(
+            "(i32.store8 offset=32 (local.get $ret) \
+             (i32.shr_u (i32.load offset=8 (i32.load offset=4 (local.get $val))) (i32.const 1)))"
+        ),
+        "{adapter}"
+    );
+}
+
+/// Not every cell of a record holds a pointer. An `enum` field is an
+/// immediate, so the cell holds `2*ord+1` and nothing is allocated for it --
+/// and the bound check on its discriminant is the enum's own, in place.
+#[test]
+fn an_immediate_field_is_stored_in_the_cell_itself() {
+    let plan = plan_for("paint", PAINT);
+    assert_eq!(
+        slots(&plan.export.params[0]),
+        [("p_hue", "i32"), ("p_amount", "i64")]
+    );
+    // 24 for the return area, `paint`'s three cells at 0..12, and one boxed
+    // int at 12..20. `hue` needs no memory of its own.
+    assert_eq!(plan.export.layout.reserve, 24 + 20);
+
+    let interface = emit::rocq::interface(&plan);
+    assert!(
+        interface.contains("Record paint := mk_paint { hue : colour ; amount : int }."),
+        "{interface}"
+    );
+
+    let adapter = emit::adapter::adapter(&plan);
+    assert!(
+        adapter.contains(
+            "(i32.store offset=4 (local.get $arg) \
+             (i32.or (i32.shl (local.get $p_hue) (i32.const 1)) (i32.const 1)))"
+        ),
+        "the ordinal goes in the cell, not behind it:\n{adapter}"
+    );
+    assert!(
+        adapter.contains("(if (i32.ge_u (local.get $p_hue) (i32.const 3))"),
+        "three cases, so 3 or more names none of them:\n{adapter}"
+    );
+    assert!(
+        adapter.contains(
+            "(i32.store8 offset=8 (local.get $ret) \
+             (i32.shr_u (i32.load offset=4 (local.get $val)) (i32.const 1)))"
+        ),
+        "lifting it is one load, not two:\n{adapter}"
+    );
+}
+
+/// A record with no fields has a *nullary* constructor, so it is an immediate
+/// and nothing is allocated for it -- and the canonical ABI flattens it to no
+/// core values at all, so the export takes a WIT parameter and no wasm one.
+///
+/// Three things that only this shape says. `E-ARITY-0` is about the WIT
+/// arity, which is 1 here, so the Rocq term is a function and the adapter
+/// applies it -- to the immediate, with no block to build it in. And the
+/// return area shrinks, because `result<nothing, error>` carries nothing
+/// wider than a discriminant.
+///
+/// The gate turns this world away, with `E-RECORD-EMPTY`: the component
+/// model's `record` has at least one field, so the type cannot be written
+/// into the component at all (TODO.md#record-empty). That refusal is about
+/// the component type and nothing else, which is what this test is here to
+/// keep true -- the emitters are total over records, so if the component
+/// model ever grows the type, lifting the gate is the whole change rather
+/// than the start of one.
+#[test]
+fn an_empty_record_is_an_immediate() {
+    let plan = plan_for("nothing", NOTHING);
+    assert_eq!(slots(&plan.export.params[0]), [] as [(&str, &str); 0]);
+    assert_eq!(blocks(&plan), [None], "nothing to allocate");
+    let l = &plan.export.layout;
+    assert_eq!(
+        (l.ret_size, l.payload),
+        (2, 1),
+        "both halves are a bare discriminant, so align 1"
+    );
+    assert_eq!(
+        l.reserve, 8,
+        "rounded up, because the host wants it 8-aligned"
+    );
+
+    let interface = emit::rocq::interface(&plan);
+    assert!(
+        interface.contains("Record nothing := mk_nothing { }."),
+        "{interface}"
+    );
+    assert!(
+        interface.contains("Parameter id : nothing -> nothing."),
+        "a function of it, not a constant:\n{interface}"
+    );
+
+    let adapter = emit::adapter::adapter(&plan);
+    assert!(
+        adapter.contains("(func (export \"id\") (result i32)"),
+        "no core parameters:\n{adapter}"
+    );
+    assert!(
+        adapter.contains("(i32.const 1)\n      (i32.load offset=4 (local.get $closure)))"),
+        "applied to the nullary immediate:\n{adapter}"
+    );
+    assert!(
+        !adapter.contains("local $arg"),
+        "no block, so no local for one:\n{adapter}"
+    );
+    assert!(
+        !adapter.contains("i64"),
+        "nothing here is 64 bits wide:\n{adapter}"
+    );
+}

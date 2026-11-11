@@ -105,17 +105,16 @@ merged with its generated adapter, and invoked — including one invocation with
 the heap capped at the module's declared minimum, where the real allocator
 fails and the adapter has to answer `err(out-of-memory)`.
 
-Some examples run *ahead* of the gate. [`record`](examples/record) and
-[`variant`](examples/variant) are the whole pipeline for constructs `generate`
-still refuses — hand-written, measured against modules the real CertiRocq
-compiled, and answering correctly. Those are the target the next support work
-is written against, and the check holds the generator to refusing them until
-it is done.
+Some examples run *ahead* of the gate. [`variant`](examples/variant) is the
+whole pipeline for a construct `generate` still refuses — hand-written,
+measured against a module the real CertiRocq compiled, and answering
+correctly. It is the target the next support work is written against, and the
+check holds the generator to refusing it until that is done.
 
-[`minus`](examples/minus) was one of them until several parameters landed, and
-the move is what that work was for: the generator now emits its adapter token
-for token, so the same hand-written file that was a target is now the
-reference.
+[`minus`](examples/minus) and [`record`](examples/record) were both there
+until several parameters and then records landed, and the move is what that
+work was for: the generator now emits their adapters token for token, so the
+same hand-written files that were targets are now the reference.
 
 ## WIT feature support
 
@@ -133,8 +132,9 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | `result<T, error>` as the result | **required** | the [failure channel](TODO.md#failure-channel), on every export |
 | type aliases | **supported** | looked through |
 | `option<T>`, `result<T, E>` as a value | **supported** | Rocq's `option` or `sum`, nested to any depth, with the [case mapping](TODO.md#option-result) written into `interface.v`; a `result` with a payload in neither case is refused |
-| `record`, `tuple` | [not supported](TODO.md#structured-types) | needs split ordinal mapping + canonical-ABI layout; [`examples/record`](examples/record) is the hand-written target, and it runs |
-| `variant` | [not supported](TODO.md#structured-types) | same machinery; [`examples/variant`](examples/variant) is the hand-written target, and it runs |
+| `record` | **supported** | one boxed constructor, fields laid out by the canonical ABI, in any position and to any depth; [`examples/record`](examples/record) is the reference. A record with [no fields](TODO.md#record-empty) has no component type, and one with [a single field](TODO.md#record-unboxed) the backend unboxes, so both are refused |
+| `tuple` | [not supported](TODO.md#structured-types) | lays out as the equivalent `record` does; what is missing is a name to declare it under in Rocq |
+| `variant` | [not supported](TODO.md#structured-types) | needs the backend's split ordinal mapping ported; [`examples/variant`](examples/variant) is the hand-written target, and it runs |
 | `s8`, `s16`, `s32`, `s64` | [not supported](TODO.md#signed-integers) | `Sint63` vs two's-complement `Uint63` undecided |
 | `f64` | [not supported](TODO.md#f64) | boxed as primitive ints are, on the backend's `wasm-prim-floats` branch |
 | `f32` | [not planned](TODO.md#f32) | `PrimFloat` is binary64 only; nothing carries an `f32` faithfully |
@@ -173,7 +173,7 @@ into [`TODO.md`](TODO.md)**, never silently mishandled.
 | [`bindgen/src/emit/`](bindgen/src/emit) | the emitters: `rocq.rs`, `adapter.rs`, `build.rs`, each a pure function of the plan |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
-| [`examples/`](examples) | the whole pipeline for one export, hand-written before the emitter existed and so usable as evidence about it: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), and [`record`](examples/record) and [`variant`](examples/variant), which are ahead of the gate |
+| [`examples/`](examples) | the whole pipeline for one export, hand-written before the emitter existed and so usable as evidence about it: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), [`record`](examples/record), and [`variant`](examples/variant), which is ahead of the gate |
 | [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`TODO.md`](TODO.md) | what is deferred, why, and what it would cost |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |

@@ -1,0 +1,17 @@
+package local:backend;
+
+// A record argument, read on the way in through the backend's own compiled
+// projections -- which trap unless the pointer is even and the ordinal is 0,
+// so the adapter writing the ordinal is not optional here. No stub can make
+// that statement: `examples/record`'s mirrors the traps because it was
+// written to, and this one is the thing itself.
+//
+// `is-empty` reads one field and not the other, which is what makes the two
+// distinguishable. An operation over both that commuted -- a sum, a swap --
+// would answer correctly with the offsets exchanged, because the same
+// mistake on the way in and on the way out cancels.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  record span { start: u64, byte-length: u64 }
+  export is-empty: func(s: span) -> result<bool, error>;
+}

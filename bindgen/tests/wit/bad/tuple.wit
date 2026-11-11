@@ -1,0 +1,10 @@
+package local:bad;
+
+// A `tuple` is the shape a `record` is -- one constructor, a field per
+// element -- and still turned away, because the Rocq type is not the shape.
+// Nothing names a tuple, so it rides on the Stdlib's `prod`, and `A * B * C`
+// is `prod (prod A B) C`: nested where the canonical ABI is flat.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  export rotate: func(t: tuple<u64, bool>) -> result<u64, error>;
+}

@@ -1,7 +1,10 @@
 package local:bad;
 
+// A `variant` is the one of record/tuple/variant still deferred: its cases
+// mix payload-carrying and payload-less ones, so CertiRocq numbers them in
+// two independent classes and the WIT discriminant is not the ordinal.
 world w {
   use certirocq:abi/errors@0.1.0.{error};
-  record point { x: u64, y: u64 }
-  export norm: func(p: point) -> result<u64, error>;
+  variant byte-count { unknown, exactly(u64), too-big }
+  export add-byte: func(c: byte-count) -> result<u64, error>;
 }

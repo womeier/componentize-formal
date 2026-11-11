@@ -396,7 +396,14 @@ fn carries_u64(resolve: &Resolve, ty: Type) -> bool {
     }
 }
 
-/// The payloads of an `option` or `result`, or `None` if this is neither.
+/// The types a composite carries, or `None` if this is not one.
+///
+/// A case's payload for an `option` or a `result`, a field's type for a
+/// `record`. The distinction between "one of these" and "all of these" does
+/// not matter to the only caller: whether a `u64` can be in there is the same
+/// question either way. A `tuple` is listed too, even though the gate refuses
+/// one, because this answers what a type *can contain* and the refusal is
+/// reported separately.
 fn payloads(resolve: &Resolve, ty: Type) -> Option<Vec<Type>> {
     let Type::Id(id) = ty else {
         return None;
@@ -405,6 +412,8 @@ fn payloads(resolve: &Resolve, ty: Type) -> Option<Vec<Type>> {
         TypeDefKind::Type(inner) => payloads(resolve, *inner),
         TypeDefKind::Option(inner) => Some(vec![*inner]),
         TypeDefKind::Result(r) => Some(r.ok.into_iter().chain(r.err).collect()),
+        TypeDefKind::Record(r) => Some(r.fields.iter().map(|f| f.ty).collect()),
+        TypeDefKind::Tuple(t) => Some(t.types.clone()),
         _ => None,
     }
 }
@@ -651,14 +660,84 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
             }
         }
 
-        TypeDefKind::Record(_) | TypeDefKind::Tuple(_) | TypeDefKind::Variant(_) => rep.reject(
+        // A record with no fields is the one thing about a record itself that
+        // has to be turned away, and it is not this tool's limit: `wit-parser`
+        // accepts the declaration and the component model has no type for it
+        // -- `wasm-tools component new` refuses the module with "record type
+        // must have at least one field" while decoding the world back out of
+        // it. Refused here so the report names the field list rather than
+        // surfacing an offset into a custom section, four build steps later
+        // (TODO.md#record-empty).
+        TypeDefKind::Record(r) if r.fields.is_empty() => rep.reject(
+            codes::RECORD_EMPTY,
+            shown.clone(),
+            site.to_string(),
+            Reason::Malformed,
+            "record-empty",
+            "the component model's `record` has at least one field, so this type \
+             cannot be written into the component at all; a record carrying no \
+             information is one the export does not need to take",
+        ),
+        // A record with exactly one field is not a block at all: the
+        // backend's erasure *unboxes* a single-constructor inductive of one
+        // argument, so the value is the field's own representation and the
+        // projection is the identity. Measured, not inferred --- the module
+        // for `fun (x : inner) => (a x + 1)%uint63` loads the argument as a
+        // boxed int, with no ordinal and no tag test
+        // (TODO.md#record-unboxed). The emitters build a block, so this is
+        // refused until they do not.
+        TypeDefKind::Record(r) if r.fields.len() == 1 => rep.reject(
+            codes::RECORD_UNBOXED,
+            shown.clone(),
+            site.to_string(),
+            Reason::Planned(3),
+            "record-unboxed",
+            "the backend erases a one-field record to the field itself, so the value \
+             is not the block the adapter builds; a second field, or the field's own \
+             type in its place, is carried today",
+        ),
+        // Otherwise a record is carried, so there is nothing here that is a
+        // property of the record -- only its fields, each walked under its own
+        // name.
+        TypeDefKind::Record(r) => {
+            for field in &r.fields {
+                walk(
+                    resolve,
+                    field.ty,
+                    pos,
+                    &format!("{site}, field `{}`", field.name),
+                    rep,
+                );
+            }
+        }
+        // A `tuple` is the same shape as a record -- one constructor with a
+        // field per element -- and still deferred, because the Rocq type is
+        // not the shape. Nothing names a tuple, so it has to ride on the
+        // Stdlib's `prod`, and `A * B * C` is `prod (prod A B) C`: nested on
+        // the Rocq side where the canonical ABI is flat. A `record` of the
+        // same fields is carried today and says the same thing.
+        TypeDefKind::Tuple(_) => rep.reject(
             codes::STRUCTURED,
             shown.clone(),
             site.to_string(),
             Reason::Planned(3),
             "structured-types",
-            "needs the split boxed/unboxed ordinal mapping and canonical-ABI record and \
-             variant layout",
+            "needs the Stdlib `prod` nesting matched to the ABI's flat layout; a \
+             `record` of the same fields is carried",
+        ),
+        // A `variant` is the one of the three that is still deferred, and the
+        // reason is the ordinals: its cases mix payload-carrying and
+        // payload-less ones, so CertiRocq numbers them in two independent
+        // classes and no arithmetic on the WIT discriminant produces the
+        // right ordinal -- `examples/variant` is what that looks like.
+        TypeDefKind::Variant(_) => rep.reject(
+            codes::STRUCTURED,
+            shown.clone(),
+            site.to_string(),
+            Reason::Planned(3),
+            "structured-types",
+            "needs the split boxed/unboxed ordinal mapping: a variant's cases are \
+             numbered per class, so the WIT discriminant is not the ordinal",
         ),
 
         TypeDefKind::Flags(_) => rep.reject(

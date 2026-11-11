@@ -4,7 +4,7 @@
 # grow beyond the file names.
 
 WASM_NAME  := rocq-grow
-MERGE_OPTS := --enable-reference-types
+MERGE_OPTS := --enable-reference-types --enable-tail-call
 
 # WAVE spells a record `{field:value}`, with the WIT field names. The braces
 # are added by the recipe rather than written here, because `{a,b}` in a shell

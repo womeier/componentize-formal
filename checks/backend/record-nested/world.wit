@@ -1,0 +1,21 @@
+package local:backend;
+
+// A record field that is a record, in both positions. Two levels is where
+// the recursion in the emitters stops being a claim: the lowering builds the
+// inner block where the outer one's cell points, and the lift reaches `a`
+// through two cells rather than one.
+//
+// `bump` adds a different amount to every field on purpose. A swap would
+// cancel -- exchanging two slots on the way in and on the way out gives the
+// right answer back -- and adding the same amount to all of them would
+// survive reading one field twice.
+//
+// Both levels carry two fields because a one-field record is not a block at
+// all: the backend erases it to the field (TODO.md#record-unboxed), which is
+// what this case found when `inner` had one.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  record inner { a: u64, z: u64 }
+  record outer { i: inner, b: u64 }
+  export bump: func(o: outer) -> result<outer, error>;
+}

@@ -1,0 +1,16 @@
+package local:bad;
+
+// A record with exactly one field, which the backend does not represent as a
+// block: its erasure unboxes a single-constructor inductive of one argument,
+// so the value *is* the field and the projection is the identity. Measured
+// off a compiled module, not inferred -- see TODO.md#record-unboxed.
+//
+// Refused because the emitters build a block and read a cell out of it, which
+// against an unboxed value is a wrong answer rather than a trap: the one
+// failure mode this repo exists to prevent. `checks/backend.py`'s nested
+// record case is what found it.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  record wrapper { value: u64 }
+  export unwrap: func(w: wrapper) -> result<u64, error>;
+}

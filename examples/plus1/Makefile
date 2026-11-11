@@ -5,7 +5,7 @@
 
 WASM_NAME  := rocq-plus1
 INVOKE     := 0 8 4611686018427387903 9223372036854775807 9223372036854775808
-MERGE_OPTS := --enable-reference-types
+MERGE_OPTS := --enable-reference-types --enable-tail-call
 
 .PHONY: all run run-stub run-stub-oom clean
 all: run-stub

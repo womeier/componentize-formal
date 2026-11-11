@@ -27,6 +27,13 @@ conversion in one direction only:
                         a middle one and the last
     arity   sub         two parameters, which the backend curries: one
                         application per argument (TODO.md#arity)
+    record  is-empty    a `record` argument, read through the backend's own
+            whole       compiled projections, a `record` result, read back
+            bump        through its cells, and a nested one, where a cell of
+                        the outer block points at another block. Every record
+                        here has two fields, because a one-field one is not a
+                        block at all (TODO.md#record-unboxed) -- which is what
+                        `bump` found when its inner record had one
     sum     unwrap-or   an `option` in each position -- one case of each
             halve       CertiRocq kind, so the tag bit is what tells them
                         apart -- and a `result<u64, bool>` as a *value*,
@@ -188,6 +195,47 @@ EXPECTED: dict[str, dict] = {
             # Two discriminants have to hold for the payload to be there, and
             # the range check runs under both.
             ("some(some(9223372036854775808))", "err(out-of-range)"),
+        ],
+    },
+    "record-param": {
+        "export": "is-empty",
+        "pins": [("Record", "param")],
+        "answers": [
+            ("{start: 0, byte-length: 5}", "ok(false)"),
+            ("{start: 5, byte-length: 0}", "ok(true)"),
+            # Every field of a record is part of every value of it, so each
+            # one's range check is unguarded -- and one field being in range
+            # says nothing about the other.
+            ("{start: 9223372036854775808, byte-length: 0}", "err(out-of-range)"),
+            ("{start: 0, byte-length: 9223372036854775808}", "err(out-of-range)"),
+        ],
+    },
+    "record-result": {
+        "export": "whole",
+        "pins": [("Record", "result")],
+        "answers": [
+            ("3", "ok({start: 3, byte-length: 4})"),
+            ("0", "ok({start: 0, byte-length: 1})"),
+            # `Uint63.int` is modular, so the second field wraps and the
+            # first does not -- the two fields of one answer disagreeing,
+            # which a lift reading one cell twice cannot produce.
+            ("9223372036854775807", "ok({start: 9223372036854775807, byte-length: 0})"),
+            ("9223372036854775808", "err(out-of-range)"),
+        ],
+    },
+    "record-nested": {
+        "export": "bump",
+        "pins": [("Record", "param"), ("Record", "result")],
+        "answers": [
+            # A different amount per field, so no two of them can be
+            # exchanged without the answer saying so.
+            ("{i: {a: 1, z: 1}, b: 2}", "ok({i: {a: 2, z: 3}, b: 12})"),
+            ("{i: {a: 0, z: 0}, b: 0}", "ok({i: {a: 1, z: 2}, b: 10})"),
+            # Each field two levels down has its own check, reached through
+            # both records and guarded by neither.
+            ("{i: {a: 9223372036854775808, z: 0}, b: 0}", "err(out-of-range)"),
+            ("{i: {a: 0, z: 9223372036854775808}, b: 0}", "err(out-of-range)"),
+            ("{i: {a: 0, z: 0}, b: 9223372036854775808}", "err(out-of-range)"),
         ],
     },
     "arity": {

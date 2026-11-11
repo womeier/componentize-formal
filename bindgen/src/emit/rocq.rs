@@ -64,6 +64,36 @@ pub fn interface(plan: &Plan) -> String {
         ]));
     }
 
+    // After every inductive, so a record with an `enum` field refers to a
+    // type already in scope. A record is a one-constructor inductive, so the
+    // representation is an ordinary boxed constructor -- and declaring it as
+    // a `Record` rather than as an `Inductive` is what gives the user the
+    // projections, which is the whole reason the field names are carried
+    // this far.
+    for rec in &plan.records {
+        writeln!(out, "\n(* {} *)", rec.wit_declaration()).unwrap();
+        // `{ }` with nothing in it for a record with no fields, which is a
+        // type Rocq accepts and whose constructor is nullary -- so the value
+        // is an immediate rather than a block (repr.rs SINGLE_CTOR_ORDINAL).
+        let fields = rec
+            .fields
+            .iter()
+            .map(|(name, ty)| format!("{name} : {ty}"))
+            .collect::<Vec<_>>()
+            .join(" ; ");
+        let body = match fields.is_empty() {
+            true => "{ }".to_string(),
+            false => format!("{{ {fields} }}"),
+        };
+        writeln!(out, "Record {} := {} {body}.", rec.rocq_name, rec.ctor).unwrap();
+        out.push_str(&comment::rocq(&[
+            "Field order is load-bearing: it is the order the canonical ABI",
+            "lays the fields out in and the order the constructor takes them",
+            "in, and the adapter is emitted from the two agreeing. The names",
+            "are projections, so `start s` is how the field is read.",
+        ]));
+    }
+
     writeln!(out, "\nModule Type {}.", plan.module_type).unwrap();
     writeln!(out, "  (* {} *)", e.signature).unwrap();
     // Which constructor is which case. The mapping is not guessable from the
@@ -190,16 +220,26 @@ impl Plan {
 /// reads in WIT.
 fn sums(plan: &Plan) -> Vec<&Sum> {
     fn walk<'a>(repr: &'a Repr, found: &mut Vec<&'a Sum>) {
-        let Repr::Sum(sum) = repr else {
-            return;
-        };
-        if !found.iter().any(|seen| seen.wit == sum.wit) {
-            found.push(sum);
-        }
-        for case in &sum.cases {
-            if let Some(payload) = &case.payload {
-                walk(payload, found);
+        match repr {
+            Repr::Sum(sum) => {
+                if !found.iter().any(|seen| seen.wit == sum.wit) {
+                    found.push(sum);
+                }
+                for case in &sum.cases {
+                    if let Some(payload) = &case.payload {
+                        walk(payload, found);
+                    }
+                }
             }
+            // A field can be an `option` as much as a parameter can, and the
+            // comment is as unguessable there: `record cursor { at: option<u64> }`
+            // needs the reader to know that `none` is `None`.
+            Repr::Record(rec) => {
+                for field in &rec.fields {
+                    walk(&field.repr, found);
+                }
+            }
+            _ => {}
         }
     }
     let mut found = Vec::new();

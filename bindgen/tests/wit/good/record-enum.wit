@@ -1,0 +1,11 @@
+package local:ok;
+
+// An `enum` field, which is an immediate: the cell holds `2*ord+1` rather
+// than a pointer, so the record's cells are not all the same kind of thing.
+// The bound check on the discriminant is the enum's own, in place.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum colour { red, green, blue }
+  record paint { hue: colour, amount: u64 }
+  export mix: func(p: paint) -> result<paint, error>;
+}

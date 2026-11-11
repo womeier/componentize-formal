@@ -1,0 +1,15 @@
+package local:bad;
+
+// A one-field record as a *field* of another, which is the shape that
+// returned a wrong answer end to end: the adapter built `[ord, &inner_block,
+// &b]` where the backend expected the inner field's own representation in
+// that cell, so `a (i o) + 1` added one to a block header and the lift read
+// the original value back out. See TODO.md#record-unboxed.
+//
+// Refused under the field's name, because that is the line to change.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  record inner { a: u64 }
+  record outer { i: inner, b: u64 }
+  export bump: func(o: outer) -> result<outer, error>;
+}

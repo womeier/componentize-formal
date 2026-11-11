@@ -1,0 +1,12 @@
+package local:backend;
+
+// A record on the way out, which is the direction the adapter *reads* one:
+// `result` holds a pointer to the block the compiled code allocated, and
+// every field is a load through its cell. The two fields differ by one, so a
+// lift that read the same cell twice, or read them in the other order,
+// answers something this check can see.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  record span { start: u64, byte-length: u64 }
+  export whole: func(n: u64) -> result<span, error>;
+}

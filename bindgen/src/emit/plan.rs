@@ -49,6 +49,15 @@ pub enum Repr {
     /// (`repr::IMMEDIATE_TAG_BIT`) -- the same test the backend's own `match`
     /// makes.
     Sum(Box<Sum>),
+    /// A WIT `record`: one constructor with a field per WIT field, so a
+    /// pointer to `[ord, f0, ..., fn-1]` (TODO.md#structured-types).
+    ///
+    /// Boxed in the same sense [`Repr::Int63`] is, and unlike [`Repr::Sum`]:
+    /// a record has one constructor, so the value is always a pointer and
+    /// there is no tag bit to test. What is behind each cell is another
+    /// value's representation, which is why building one is recursive --
+    /// every field goes down before the record pointing at it.
+    Record(Box<Record>),
 }
 
 /// How CertiRocq represents one constructor.
@@ -125,6 +134,60 @@ impl Sum {
     }
 }
 
+/// A WIT `record` and the Rocq `Record` carrying it.
+///
+/// A single constructor of arity *n*, which is what CertiRocq compiles a Rocq
+/// `Record` to -- so `record span { start: u64, byte-length: u64 }` is carried
+/// by a generated `Record span := mk_span { start : int ; byte_length : int }`.
+/// The world names the type, so there is a name to declare, which is the split
+/// the rest of the generator already makes: a named WIT type gets a
+/// declaration written for it (an `enum` does, and deliberately not Rocq's
+/// `bool` -- see `repr::BOOL_FALSE`), and an anonymous one is carried in a
+/// Stdlib type (`option` and `sum` carry an `option` and a `result`).
+///
+/// A field may be a record itself, so this struct nests -- and the nesting is
+/// on the Rocq side only. The canonical ABI lays a record out flat, and
+/// [`Field::offset`] is the offset `wit_parser` gives the field inside its own
+/// record, so the two views agree about which byte is which.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Record {
+    /// How the type reads in the WIT file.
+    pub wit: String,
+    /// The Rocq type, as a signature writes it: `span`, `int * int`.
+    pub rocq_type: String,
+    /// The constructor, which is the only one the type has.
+    pub ctor: String,
+    /// In WIT declaration order, which is the order both representations put
+    /// them in: the canonical ABI lays the fields out in it, and the Rocq
+    /// constructor takes them in it.
+    pub fields: Vec<Field>,
+    pub size: u32,
+    pub align: u32,
+}
+
+/// One field of a record, with where the canonical ABI puts it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Field {
+    /// The WIT field name, for the comments the emitters write.
+    pub wit_name: String,
+    /// The Rocq projection. A record's field names become top-level
+    /// projections, so two records with a field of the same name would have
+    /// the second shadow the first -- which is why these go through
+    /// `rocq_ident` against everything else the file declares.
+    pub rocq_name: String,
+    pub repr: Repr,
+    /// Byte offset from the start of the record, from `SizeAlign`'s own field
+    /// offsets rather than from arithmetic here.
+    pub offset: u32,
+}
+
+impl Record {
+    /// The Rocq cell holding field *i*, which is the field after the ordinal.
+    pub fn cell(&self, i: usize) -> u32 {
+        repr::boxed_field_offset(i as u32)
+    }
+}
+
 impl Repr {
     /// The Rocq type as it is written in a signature.
     pub fn rocq_type(&self) -> String {
@@ -133,6 +196,7 @@ impl Repr {
             Repr::Int63 => "int".into(),
             Repr::Enum { rocq_type, .. } => rocq_type.clone(),
             Repr::Sum(sum) => sum.rocq_type.clone(),
+            Repr::Record(rec) => rec.rocq_type.clone(),
         }
     }
 
@@ -155,7 +219,15 @@ impl Repr {
     /// other per case -- so it answers `false` and the emitters match on it
     /// rather than asking.
     pub fn boxed(&self) -> bool {
-        matches!(self, Repr::Int63)
+        match self {
+            Repr::Int63 => true,
+            // A record with no fields has a *nullary* constructor, so it is
+            // an immediate like any other -- `repr::nullary_immediate(0)`,
+            // the same number `None` is. Nothing is allocated for it and
+            // there is nothing to point at.
+            Repr::Record(rec) => !rec.fields.is_empty(),
+            _ => false,
+        }
     }
 
     /// Can a value of this type carry a `u64` that has no `Uint63.int`?
@@ -171,6 +243,7 @@ impl Repr {
                 .cases
                 .iter()
                 .any(|c| c.payload.as_ref().is_some_and(Repr::carries_int63)),
+            Repr::Record(rec) => rec.fields.iter().any(|f| f.repr.carries_int63()),
         }
     }
 
@@ -194,7 +267,7 @@ impl Repr {
                 repr::BOOL_TRUE,  // true is discriminant 1
             ],
             Repr::Enum { cases, .. } => (0..*cases as u32).map(repr::nullary_immediate).collect(),
-            Repr::Int63 | Repr::Sum(_) => Vec::new(),
+            Repr::Int63 | Repr::Sum(_) | Repr::Record(_) => Vec::new(),
         }
     }
 
@@ -218,6 +291,7 @@ impl Repr {
                 Some(payload) => payload.tags_are_the_formula(),
                 None => true,
             }),
+            Repr::Record(rec) => rec.fields.iter().all(|f| f.repr.tags_are_the_formula()),
             _ => true,
         }
     }
@@ -255,6 +329,16 @@ impl Repr {
                 }
                 Ok(slots)
             }
+            // Every field, in order. The canonical ABI flattens a record by
+            // concatenating its fields' flattenings -- there is no
+            // discriminant and nothing is shared, because all of the fields
+            // are part of the value at once.
+            Repr::Record(rec) => Ok(rec
+                .fields
+                .iter()
+                .map(|f| f.repr.flatten())
+                .collect::<Result<Vec<_>>>()?
+                .concat()),
         }
     }
 
@@ -282,7 +366,7 @@ impl Repr {
                 *next += repr::CELL * 2;
                 Cells::Block {
                     at,
-                    cases: sum
+                    inner: sum
                         .cases
                         .iter()
                         .map(|c| match &c.payload {
@@ -290,6 +374,20 @@ impl Repr {
                             None => Cells::Nothing,
                         })
                         .collect(),
+                }
+            }
+            // No fields, so a nullary constructor: an immediate, with
+            // nothing to allocate.
+            Repr::Record(rec) if rec.fields.is_empty() => Cells::Nothing,
+            Repr::Record(rec) => {
+                // `[ord, f0, ..., fn-1]`: the ordinal and one cell per field,
+                // all of them written, and then whatever the values those
+                // cells point at need.
+                let at = *next;
+                *next += repr::CELL * (rec.fields.len() as u32 + 1);
+                Cells::Block {
+                    at,
+                    inner: rec.fields.iter().map(|f| f.repr.cells(next)).collect(),
                 }
             }
         }
@@ -305,9 +403,15 @@ pub enum Cells {
     Nothing,
     /// An 8-byte primitive payload at this offset.
     Payload(u32),
-    /// `[ord, field]` at this offset, and then whatever each case's own
-    /// payload needs.
-    Block { at: u32, cases: Vec<Cells> },
+    /// A constructor's block at this offset -- the ordinal, then one cell per
+    /// field -- and then whatever the values those cells point at need.
+    ///
+    /// One variant for both of the shapes that have a block, because the
+    /// offsets work the same way; what differs is how many of the cells are
+    /// written. A sum reserves one field cell and `inner` is per *case*, since
+    /// exactly one case is ever built. A record reserves one per field and
+    /// `inner` is per *field*, since all of them are.
+    Block { at: u32, inner: Vec<Cells> },
 }
 
 impl Cells {
@@ -355,6 +459,46 @@ impl Inductive {
     /// inductive. Rebuilt rather than quoted, so it says what was understood.
     pub fn wit_declaration(&self) -> String {
         format!("enum {} {{ {} }}", self.wit_name, self.wit_cases.join(", "))
+    }
+}
+
+/// A `Record` `interface.v` has to declare, for a WIT `record`.
+///
+/// Separate from [`Inductive`] rather than a second shape of it, because the
+/// two are emitted differently and ordered against each other: every
+/// inductive is declared before every record, so a record with an `enum`
+/// field refers to a type that is already there. A record with a *record*
+/// field is ordered by construction -- the fields are planned before the
+/// record around them, so the inner one is pushed first.
+#[derive(Debug, Clone)]
+pub struct RecordDecl {
+    pub rocq_name: String,
+    /// The one constructor. `mk_` and the type's name: a record's constructor
+    /// has to be named something, and Rocq's own anonymous spelling (`Build_`)
+    /// is a convention of the `Record` command rather than a name the user
+    /// would guess.
+    pub ctor: String,
+    /// Projection name and Rocq type, in declaration order.
+    pub fields: Vec<(String, String)>,
+    /// The WIT name, for the comment that ties the two together.
+    pub wit_name: String,
+    /// Field name and WIT type, in the same order.
+    pub wit_fields: Vec<(String, String)>,
+}
+
+impl RecordDecl {
+    /// How the type reads in the WIT file. Rebuilt rather than quoted, so it
+    /// says what was understood.
+    pub fn wit_declaration(&self) -> String {
+        format!(
+            "record {} {{ {} }}",
+            self.wit_name,
+            self.wit_fields
+                .iter()
+                .map(|(name, ty)| format!("{name}: {ty}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
@@ -497,6 +641,9 @@ pub struct Plan {
     pub world_name: String,
     pub export: Export,
     pub inductives: Vec<Inductive>,
+    /// Declared after every inductive, so a record with an `enum` field
+    /// refers to a type already in scope.
+    pub records: Vec<RecordDecl>,
     pub build: Build,
 }
 
@@ -515,6 +662,23 @@ const RESERVED: &[&str] = &[
     "list",
     "Some",
     "None",
+    // What a `result` is carried in, plus the Stdlib pair and unit. The gate
+    // refuses a WIT `tuple` (TODO.md#structured-types), but `prod` and its
+    // projections are in scope in the generated file either way, and a record
+    // field called `fst` would shadow the one a user's own code reads a pair
+    // with -- which would then quietly mean the other thing.
+    "sum",
+    "inl",
+    "inr",
+    "prod",
+    "pair",
+    "fst",
+    "snd",
+    "tt",
+    // Stdlib list constructors. The gate refuses a WIT `list`, but these are
+    // in scope either way and a `Parameter nil` would shadow them.
+    "nil",
+    "cons",
     // Rocq keywords and command heads that cannot be identifiers at all.
     "fun",
     "forall",
@@ -580,10 +744,9 @@ impl Plan {
         let mut sizes = SizeAlign::default();
         sizes.fill(resolve);
 
-        let mut inductives = Vec::new();
-        let mut taken: Vec<String> = Vec::new();
+        let mut decl = Declared::default();
 
-        let rocq_name = rocq_ident(&wit_name, "export", &mut taken)?;
+        let rocq_name = rocq_ident(&wit_name, "export", &mut decl.taken)?;
 
         ensure!(
             !func.params.is_empty(),
@@ -595,7 +758,7 @@ impl Plan {
             .params
             .iter()
             .map(|p| {
-                repr_of(resolve, &sizes, p.ty, &mut inductives, &mut taken)
+                repr_of(resolve, &sizes, p.ty, &mut decl)
                     .with_context(|| format!("parameter `{}` of `{wit_name}`", p.name))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -614,7 +777,7 @@ impl Plan {
             "the export returns result<_, error> with no ok type, so there is nothing for \
              the Rocq function to return -- give the ok half a type",
         )?;
-        let ok_repr = repr_of(resolve, &sizes, ok, &mut inductives, &mut taken)
+        let ok_repr = repr_of(resolve, &sizes, ok, &mut decl)
             .with_context(|| format!("the result of `{wit_name}`"))?;
 
         // The adapter lifts and lowers an all-nullary type with a shift, which
@@ -677,20 +840,17 @@ impl Plan {
         let mut params = Vec::new();
         for (i, p) in func.params.iter().enumerate() {
             let rocq_name = rocq_ident(&p.name, "parameter", &mut locals)?;
-            // A parameter arriving in one core value keeps its own name, which
-            // is what the hand-written adapters spell it. Several are
-            // numbered: nothing in the WIT file names the flat values of a
-            // sum, and the adapter writes a comment saying which is which.
+            let locals_for = slot_locals(&param_reprs[i], &rocq_name);
+            debug_assert_eq!(
+                locals_for.len(),
+                flat[i].len(),
+                "one local per flat value of `{}`",
+                p.name
+            );
             let slots: Vec<Slot> = flat[i]
                 .iter()
-                .enumerate()
-                .map(|(s, wasm)| Slot {
-                    local: match flat[i].len() {
-                        1 => rocq_name.clone(),
-                        _ => format!("{rocq_name}_f{s}"),
-                    },
-                    wasm,
-                })
+                .zip(locals_for)
+                .map(|(wasm, local)| Slot { local, wasm })
                 .collect();
             for slot in &slots {
                 if slot.local == rocq_name {
@@ -752,7 +912,8 @@ impl Plan {
                 discriminants,
                 failures,
             },
-            inductives,
+            inductives: decl.inductives,
+            records: decl.records,
             build: build(cfg, wit_dir)?,
         })
     }
@@ -806,38 +967,46 @@ fn rocq_ident(wit: &str, what: &str, taken: &mut Vec<String>) -> Result<String> 
     Ok(ident)
 }
 
-/// Which Rocq type carries this WIT type, declaring an inductive if there is
-/// no counterpart to reuse.
-fn repr_of(
-    resolve: &Resolve,
-    sizes: &SizeAlign,
-    ty: Type,
-    inductives: &mut Vec<Inductive>,
-    taken: &mut Vec<String>,
-) -> Result<Repr> {
+/// What `interface.v` ends up declaring, and the names already spoken for.
+///
+/// One value threaded through [`repr_of`] rather than three parameters: a
+/// type can declare an inductive, a record, or neither, and every name any of
+/// them introduces competes with every other for the same namespace -- a
+/// record's field becomes a top-level projection, so a field called `start`
+/// and an enum case called `start` cannot both be declared.
+#[derive(Default)]
+struct Declared {
+    inductives: Vec<Inductive>,
+    records: Vec<RecordDecl>,
+    taken: Vec<String>,
+}
+
+/// Which Rocq type carries this WIT type, declaring an inductive or a record
+/// if there is no counterpart to reuse.
+fn repr_of(resolve: &Resolve, sizes: &SizeAlign, ty: Type, decl: &mut Declared) -> Result<Repr> {
     match ty {
         Type::Bool => Ok(Repr::Bool),
         Type::U64 => Ok(Repr::Int63),
         Type::Id(id) => {
             let def = &resolve.types[id];
             match &def.kind {
-                TypeDefKind::Type(inner) => repr_of(resolve, sizes, *inner, inductives, taken),
+                TypeDefKind::Type(inner) => repr_of(resolve, sizes, *inner, decl),
                 TypeDefKind::Enum(e) => {
                     let wit_name = def
                         .name
                         .clone()
                         .context("an anonymous enum has no name to give the inductive")?;
-                    let rocq_name = match inductives.iter().find(|i| i.wit_name == wit_name) {
+                    let rocq_name = match decl.inductives.iter().find(|i| i.wit_name == wit_name) {
                         // Used twice in the same signature: declare it once.
                         Some(existing) => existing.rocq_name.clone(),
                         None => {
-                            let rocq_name = rocq_ident(&wit_name, "type", taken)?;
+                            let rocq_name = rocq_ident(&wit_name, "type", &mut decl.taken)?;
                             let constructors = e
                                 .cases
                                 .iter()
-                                .map(|c| rocq_ident(&c.name, "enum case", taken))
+                                .map(|c| rocq_ident(&c.name, "enum case", &mut decl.taken))
                                 .collect::<Result<Vec<_>>>()?;
-                            inductives.push(Inductive {
+                            decl.inductives.push(Inductive {
                                 rocq_name: rocq_name.clone(),
                                 constructors,
                                 wit_name,
@@ -857,7 +1026,7 @@ fn repr_of(
                 // before this runs (`result_halves`). Both of these are the
                 // same two-case shape -- see [`Sum`].
                 TypeDefKind::Option(inner) => {
-                    let payload = repr_of(resolve, sizes, *inner, inductives, taken)
+                    let payload = repr_of(resolve, sizes, *inner, decl)
                         .context("the payload of an `option`")?;
                     sum_of(
                         resolve,
@@ -869,20 +1038,70 @@ fn repr_of(
                 TypeDefKind::Result(r) => {
                     let half = |ty: Option<Type>,
                                 what: &str,
-                                inductives: &mut Vec<Inductive>,
-                                taken: &mut Vec<String>|
+                                decl: &mut Declared|
                      -> Result<Option<Repr>> {
                         match ty {
                             Some(ty) => Ok(Some(
-                                repr_of(resolve, sizes, ty, inductives, taken)
+                                repr_of(resolve, sizes, ty, decl)
                                     .with_context(|| format!("the {what} half of a `result`"))?,
                             )),
                             None => Ok(None),
                         }
                     };
-                    let ok = half(r.ok, "ok", inductives, taken)?;
-                    let err = half(r.err, "err", inductives, taken)?;
+                    let ok = half(r.ok, "ok", decl)?;
+                    let err = half(r.err, "err", decl)?;
                     sum_of(resolve, sizes, ty, [("ok", r.ok, ok), ("err", r.err, err)])
+                }
+                // A named WIT record: the world names it, so there is a
+                // `Record` to declare and the fields become projections.
+                TypeDefKind::Record(r) => {
+                    let wit_name = def
+                        .name
+                        .clone()
+                        .context("an anonymous record has no name to give the Rocq type")?;
+                    let types: Vec<Type> = r.fields.iter().map(|f| f.ty).collect();
+                    let names: Vec<String> = r.fields.iter().map(|f| f.name.clone()).collect();
+                    // Used twice in one signature -- a `span -> span` is the
+                    // ordinary case -- so the second mention reuses the
+                    // declaration and the projection names it already took,
+                    // rather than claiming them again and colliding with
+                    // itself.
+                    let already = decl
+                        .records
+                        .iter()
+                        .find(|d| d.wit_name == wit_name)
+                        .map(|d| (d.rocq_name.clone(), d.ctor.clone(), d.fields.clone()));
+                    let projections = already.as_ref().map(|(_, _, fields)| {
+                        fields.iter().map(|(name, _)| name.clone()).collect()
+                    });
+                    let fields = record_fields(resolve, sizes, &types, &names, projections, decl)?;
+                    let (rocq_name, ctor) = match already {
+                        Some((rocq_name, ctor, _)) => (rocq_name, ctor),
+                        None => {
+                            let rocq_name = rocq_ident(&wit_name, "type", &mut decl.taken)?;
+                            let ctor = rocq_ident(
+                                &format!("mk-{wit_name}"),
+                                "record constructor",
+                                &mut decl.taken,
+                            )?;
+                            decl.records.push(RecordDecl {
+                                rocq_name: rocq_name.clone(),
+                                ctor: ctor.clone(),
+                                fields: fields
+                                    .iter()
+                                    .map(|f| (f.rocq_name.clone(), f.repr.rocq_type()))
+                                    .collect(),
+                                wit_name,
+                                wit_fields: r
+                                    .fields
+                                    .iter()
+                                    .map(|f| (f.name.clone(), show(resolve, f.ty)))
+                                    .collect(),
+                            });
+                            (rocq_name, ctor)
+                        }
+                    };
+                    record_of(resolve, sizes, ty, rocq_name, ctor, fields)
                 }
                 kind => bail!(
                     "{} has no Rocq counterpart here, which the gate should have rejected \
@@ -972,6 +1191,67 @@ fn sum_of(
         payload: sizes
             .payload_offset(Int::U8, [type_a.as_ref(), type_b.as_ref()])
             .size_wasm32() as u32,
+        size: sizes.size(&ty).size_wasm32() as u32,
+        align: sizes.align(&ty).align_wasm32() as u32,
+    })))
+}
+
+/// Each field of a record as the generator carries it, with the canonical
+/// ABI's own offset for it.
+///
+/// The offsets come from `SizeAlign::field_offsets`, which is the code
+/// `wasm-tools component new` uses, so a field this adapter writes at offset
+/// 8 is the field the component reads at offset 8.
+///
+/// The projections are named here because that is where they collide: a Rocq
+/// `Record` declares its field names as top-level projections, so two records
+/// with a field of the same name would have the second shadow the first --
+/// and `start s` would then mean the other record's field while type-checking
+/// perfectly.
+/// `projections` is `Some` when this record has already been declared, in
+/// which case its field names are the ones it was declared with rather than
+/// new ones to claim.
+fn record_fields(
+    resolve: &Resolve,
+    sizes: &SizeAlign,
+    types: &[Type],
+    names: &[String],
+    projections: Option<Vec<String>>,
+    decl: &mut Declared,
+) -> Result<Vec<Field>> {
+    let offsets = sizes.field_offsets(types);
+    let mut fields = Vec::with_capacity(types.len());
+    for (i, (offset, ty)) in offsets.into_iter().enumerate() {
+        let repr = repr_of(resolve, sizes, *ty, decl)
+            .with_context(|| format!("field `{}` of a record", names[i]))?;
+        let rocq_name = match &projections {
+            Some(declared) => declared[i].clone(),
+            None => rocq_ident(&names[i], "record field", &mut decl.taken)?,
+        };
+        fields.push(Field {
+            wit_name: names[i].clone(),
+            rocq_name,
+            repr,
+            offset: offset.size_wasm32() as u32,
+        });
+    }
+    Ok(fields)
+}
+
+/// A WIT record as the Rocq record carrying it.
+fn record_of(
+    resolve: &Resolve,
+    sizes: &SizeAlign,
+    ty: Type,
+    rocq_type: String,
+    ctor: String,
+    fields: Vec<Field>,
+) -> Result<Repr> {
+    Ok(Repr::Record(Box::new(Record {
+        wit: show(resolve, ty),
+        rocq_type,
+        ctor,
+        fields,
         size: sizes.size(&ty).size_wasm32() as u32,
         align: sizes.align(&ty).align_wasm32() as u32,
     })))
@@ -1103,6 +1383,40 @@ fn layout(
     ))
 }
 
+/// One wat local per flat value a parameter arrives in, named so that the
+/// adapter can be read without counting.
+///
+/// A parameter that is one core value keeps its own name, which is what the
+/// hand-written `examples/plus1` and `examples/negb` adapters spell it.
+/// Beyond that the name says which part of the value the local holds, and the
+/// two composite shapes differ in what there is to say:
+///
+/// * A record's flat values are its fields' flattenings concatenated, so each
+///   local belongs to exactly one field and is named after it --
+///   `$s_byte_length` rather than `$s_f1`. The hand-written
+///   `examples/record` adapter is where that comes from.
+/// * A sum's two cases *share* their slots, which is what the canonical ABI's
+///   join means, so a slot there belongs to neither case in particular and
+///   there is no field to name it after. Those are numbered, and the adapter
+///   writes a comment saying which is which.
+fn slot_locals(repr: &Repr, base: &str) -> Vec<String> {
+    match repr {
+        Repr::Record(rec) => rec
+            .fields
+            .iter()
+            .flat_map(|f| slot_locals(&f.repr, &format!("{base}_{}", f.rocq_name)))
+            .collect(),
+        Repr::Sum(sum) => {
+            let n = Repr::Sum(sum.clone())
+                .flatten()
+                .map(|slots| slots.len())
+                .unwrap_or(0);
+            (0..n).map(|s| format!("{base}_f{s}")).collect()
+        }
+        _ => vec![base.to_string()],
+    }
+}
+
 /// The wat local an argument's heap cells go in.
 ///
 /// With one parameter there is no ambiguity about which argument `$arg` is,
@@ -1199,15 +1513,15 @@ fn check_failures(
     Ok(())
 }
 
-/// The core parameter types, as they are written in wat -- one per WIT
-/// parameter, positionally.
+/// The whole signature's core parameter types, as they are written in wat.
 ///
-/// Every type carried today flattens to exactly one core value, so the two
-/// lists line up and parameter *i* is core parameter *i*. A type that
-/// flattened to several (a record, a tuple) would break that correspondence
-/// silently, mapping the adapter's second argument onto the first one's second
-/// field, so the counts disagreeing is a refusal rather than something to
-/// work out.
+/// A flat list rather than one entry per WIT parameter, because a parameter
+/// does not flatten to one core value in general: a sum flattens to a
+/// discriminant and its cases' slots, a record to its fields' flattenings. So
+/// what the caller compares against is the *concatenation* of the per-type
+/// flattenings, and the two disagreeing in length would silently map the
+/// adapter's second local onto the first parameter's second field -- a
+/// refusal rather than something to work out.
 fn wasm_types(flat: &[WasmType], export: &str) -> Result<Vec<&'static str>> {
     flat.iter()
         .map(|ty| match ty {
@@ -1258,6 +1572,14 @@ fn show(resolve: &Resolve, ty: Type) -> String {
                     (None, None) => "result".into(),
                 },
                 TypeDefKind::Option(t) => format!("option<{}>", show(resolve, *t)),
+                TypeDefKind::Tuple(t) => format!(
+                    "tuple<{}>",
+                    t.types
+                        .iter()
+                        .map(|ty| show(resolve, *ty))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
                 TypeDefKind::Type(t) => show(resolve, *t),
                 kind => kind.as_str().to_string(),
             }

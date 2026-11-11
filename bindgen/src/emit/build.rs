@@ -46,7 +46,10 @@ pub fn makefile(plan: &Plan) -> String {
          WIT_FILES  := $(wildcard $(WIT)/*.wit) $(wildcard $(WIT)/deps/*/*.wit)\n\
          EXPORT     := {}\n\
          # Reference types: the adapter imports the backend's function table.\n\
-         MERGE_OPTS := --enable-reference-types\n\
+         # Tail calls: the backend emits `return_call_indirect` in the\n\
+         # wrappers it generates around a closure body, and binaryen\n\
+         # validates the input it is given.\n\
+         MERGE_OPTS := --enable-reference-types --enable-tail-call\n\
          # `make run ARGS=8` invokes the export with 8.\n\
          ARGS       ?=",
         b.wasm_name, b.wit_dir, plan.export.wit_name,

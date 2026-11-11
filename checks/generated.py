@@ -54,7 +54,6 @@ COMPARED = ["interface.v", "extraction.v", "adapter.wat"]
 # them, with the code below. An example the gate silently accepted and emitted
 # something for would be worse than one it rejects.
 AHEAD_OF_THE_GATE = {
-    "record": "E-STRUCTURED",
     "variant": "E-STRUCTURED",
 }
 

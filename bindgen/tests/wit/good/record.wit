@@ -1,0 +1,11 @@
+package local:good;
+
+// The shape examples/record is built on, kept here as well so the generator
+// tests have a record that is not the example's: two fields of the same type,
+// which is the pair an adapter with swapped field offsets answers correctly
+// for and so the one the *asymmetric* tests below have to be read against.
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  record point { x: u64, y: u64 }
+  export norm: func(p: point) -> result<u64, error>;
+}
