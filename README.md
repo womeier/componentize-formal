@@ -24,6 +24,7 @@ Given `world.wit`, the generator emits:
 - `interface.v`: a `Module Type` carrying the WIT signature as Rocq types
 - `extraction.v`: the `CertiRocq Compile Wasm` invocation, with your flags
 - `adapter.wat`: glue bridging the backend's value representation and the component model's canonical ABI;
+- `component.wat`: the component shell holding the world's type; the backend and the adapter go in as its two core modules, unmodified
 - `Makefile`: to build the component
 
 You write one file: `impl.v`, and `generate` writes the project:
@@ -32,8 +33,9 @@ $ componentize-formal generate --wit <file> --out-dir .
   interface.v                        the world as a Rocq Module Type
   extraction.v                       the CertiRocq Compile Wasm invocation
   adapter.wat                        canonical-ABI glue
-  Makefile                           build rules: rocq c, wasm-merge, component embed, component new
-  wit/deps/certirocq-abi/errors.wit  the shipped error enum, where `component embed` will look for it
+  component.wat                      the component shell: the world's type, around the two core modules
+  Makefile                           build rules: rocq c, then splice both modules into component.wat
+  wit/deps/certirocq-abi/errors.wit  the shipped error enum, next to the world that `use`s it
 
 Write impl.v implementing `Module Type WrapperWorld`, then `make` in .
 ```

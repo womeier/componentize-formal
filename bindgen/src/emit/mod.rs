@@ -1,7 +1,8 @@
 //! Turn a checked world into the files that build a component.
 //!
 //! The split is deliberate: [`plan`] answers every question and can fail,
-//! [`rocq`], [`adapter`] and [`build`] format the answers and cannot. So a run
+//! [`rocq`], [`adapter`], [`component`] and [`build`] format the answers and
+//! cannot. So a run
 //! either writes a set of files that agree with each other or writes nothing.
 //!
 //! [`convert`] sits under the emitters rather than beside them: it holds the
@@ -17,6 +18,7 @@
 
 pub mod adapter;
 pub mod build;
+pub mod component;
 pub mod convert;
 pub mod plan;
 pub mod rocq;
@@ -34,9 +36,16 @@ pub use plan::Plan;
 /// hand-written work is not something a generator gets to destroy.
 pub const MARKER: &str = "componentize-formal generate";
 
-/// The module name `wasm-merge` is given for the compiled Rocq module, and so
+/// The compiled Rocq module's name inside the component -- its core module
+/// id, and the instance name the adapter is instantiated `with` -- and so
 /// the module every import in the adapter is written against.
 pub const BACKEND_MODULE: &str = "rocq";
+
+/// The adapter's core module id inside the component. One constant each
+/// rather than a string in two emitters, because the build rules re-head the
+/// spliced modules with these ids and `component.wat` instantiates them by
+/// the same ids -- the two have to agree.
+pub const ADAPTER_MODULE: &str = "adapter";
 
 /// Whether an existing file is this generator's to rewrite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,20 +148,27 @@ pub fn artifacts(plan: &Plan) -> Vec<Artifact> {
             what: "canonical-ABI glue",
         },
         Artifact {
+            path: PathBuf::from("component.wat"),
+            contents: component::component(plan),
+            overwrite: Overwrite::Always,
+            what: "the component shell: the world's type, around the two core modules",
+        },
+        Artifact {
             path: PathBuf::from("Makefile"),
             contents: build::makefile(plan),
             overwrite: Overwrite::Always,
-            what: "build rules: rocq c, wasm-merge, component embed, component new",
+            what: "build rules: rocq c, then splice both modules into component.wat",
         },
     ]
 }
 
 /// The shipped `certirocq:abi` package, vendored into the world's `deps/`.
 ///
-/// Not decoration: `wasm-tools component embed` resolves the world from the
-/// WIT directory alone, with no idea that this generator ships a package. A
-/// world that `use`s the error enum therefore does not build until the package
-/// is on disk next to it, and the failure comes out of `wasm-tools` as an
+/// Not decoration: anything that resolves the world from the WIT directory --
+/// this generator on its next run, `wasm-tools component wit`, a user's own
+/// tooling -- has no idea that this generator ships a package. A world that
+/// `use`s the error enum therefore does not resolve until the package is on
+/// disk next to it, and the failure comes out of `wit_parser` as an
 /// unresolved package rather than from anything that could explain itself.
 pub fn vendored_abi(plan: &Plan) -> Artifact {
     Artifact {
@@ -166,7 +182,7 @@ pub fn vendored_abi(plan: &Plan) -> Artifact {
             .join(format!("{}.wit", crate::ABI_INTERFACE)),
         contents: crate::ABI_WIT.to_string(),
         overwrite: Overwrite::IfMissing,
-        what: "the shipped error enum, where `component embed` will look for it",
+        what: "the shipped error enum, next to the world that `use`s it",
     }
 }
 

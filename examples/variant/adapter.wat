@@ -25,8 +25,9 @@
 ;; arithmetic from the discriminant that produces it, which is why the cases
 ;; below are written out one by one.
 (module
-  ;; The compiled module. `wasm-merge` resolves these against its exports, so
-  ;; none of them survives into the component. Names: repr.rs `exports`.
+  ;; The compiled module. The component instantiates the adapter with the
+  ;; backend's instance, so these resolve against its exports and none is an
+  ;; import of the component itself. Names: repr.rs `exports`.
   (import "rocq" "memory" (memory 1))
   (import "rocq" "mem_ptr" (global $mem_ptr (mut i32)))
   (import "rocq" "result" (global $result (mut i32)))
@@ -135,9 +136,9 @@
     ;; that a case added to the world and forgotten here cannot fall through
     ;; into whichever branch happens to be last.
     ;;
-    ;; The block is unnamed and the branches are `br 0` on purpose: a symbolic
-    ;; label would go into the name section, and `wasm-merge` warns about the
-    ;; subsection it does not know how to read.
+    ;; The block is unnamed and the branches are `br 0` on purpose: a
+    ;; symbolic label would go into the name section, which the component
+    ;; does not need to carry.
     (block
       (if (i32.eq (local.get $tag) (i32.const 0))          ;; unknown
         (then (local.set $arg (i32.const 1)) (br 1)))

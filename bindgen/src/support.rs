@@ -663,7 +663,7 @@ fn walk_id(resolve: &Resolve, id: TypeId, pos: Pos, site: &str, rep: &mut Report
         // A record with no fields is the one thing about a record itself that
         // has to be turned away, and it is not this tool's limit: `wit-parser`
         // accepts the declaration and the component model has no type for it
-        // -- `wasm-tools component new` refuses the module with "record type
+        // -- `wasm-tools` refuses the assembled component with "record type
         // must have at least one field" while decoding the world back out of
         // it. Refused here so the report names the field list rather than
         // surfacing an offset into a custom section, four build steps later

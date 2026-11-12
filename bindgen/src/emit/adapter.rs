@@ -41,9 +41,9 @@ pub fn adapter(plan: &Plan) -> String {
             ),
             "ABI's: a return area with a discriminant and a payload at fixed".into(),
             "offsets. Nothing here is chosen -- the offsets come from".into(),
-            "bindgen/src/repr.rs and from the same layout code `wasm-tools".into(),
-            "component new` uses, so the two cannot disagree about where a byte".into(),
-            "goes.".into(),
+            "bindgen/src/repr.rs and from the same layout code `wasm-tools`".into(),
+            "validates the component with, so the two cannot disagree about".into(),
+            "where a byte goes.".into(),
         ],
     );
     out.push_str("(module\n");
@@ -52,9 +52,10 @@ pub fn adapter(plan: &Plan) -> String {
     out.push_str(&comment::wat(
         "  ",
         &[
-            "The compiled module. `wasm-merge` resolves every one of these",
-            "against its exports, so none survives into the component -- which",
-            "imports nothing at all. Names: repr.rs `exports`.",
+            "The compiled module. The component instantiates the adapter with",
+            "the backend's instance, so every one of these resolves against its",
+            "exports and none is an import of the component itself. Names:",
+            "repr.rs `exports`.",
         ],
     ));
     for (name, shape) in [

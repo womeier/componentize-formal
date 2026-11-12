@@ -593,7 +593,7 @@ def check(names: dict[str, str], wat: str) -> list[str]:
             "rationale and the proof's `mod_imports := []` assume none"
         )
 
-    # One memory, so wasm-merge does not need --enable-multimemory.
+    # One memory: the adapter imports the backend's rather than adding one.
     memories = len(MEMORY.findall(wat))
     if memories != 1:
         problems.append(f"expected exactly one memory, found {memories}")

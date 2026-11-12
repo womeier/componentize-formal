@@ -2,9 +2,8 @@ package local:bad;
 
 // A record with no fields, which is not this tool turning something away:
 // `wit-parser` accepts the declaration and the component model has no type
-// for it, so `wasm-tools component new` refuses the module with "record type
-// must have at least one field" while decoding the world back out of the
-// `component-type` custom section. The gate says so here, where the field
+// for it, so `wasm-tools` refuses an assembled component with "record type
+// must have at least one field". The gate says so here, where the field
 // list is still on screen.
 //
 // The *representation* is not the problem: a nullary constructor is an

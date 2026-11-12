@@ -7,8 +7,9 @@ output nobody sees. Keeping them committed only means something if they cannot
 go stale, which is this check's first half. It generates into a scratch
 directory and compares, in two directions that fail differently:
 
-  * **Same bytes.** The generated `interface.v`, `extraction.v`, `adapter.wat`
-    and vendored `wit/deps` must equal the committed ones exactly -- comments
+  * **Same bytes.** The generated `interface.v`, `extraction.v`,
+    `adapter.wat`, `component.wat` and vendored `wit/deps` must equal the
+    committed ones exactly -- comments
     and line breaks included, because those are emitted too and drift in them
     is still drift. Catches an offset, a constant or a discriminant that moved
     -- the mistakes that produce a component which runs and lies -- and
@@ -67,6 +68,7 @@ GENERATED = [
     "interface.v",
     "extraction.v",
     "adapter.wat",
+    "component.wat",
     "wit/deps/certirocq-abi/errors.wit",
 ]
 
@@ -75,6 +77,17 @@ GENERATED = [
 # counterpart to compare against -- what is checked instead is that the
 # generator *refuses* them, with the code below. An example the gate silently accepted and emitted
 # something for would be worse than one it rejects.
+# The least module that satisfies the adapter's imports, for assembling a
+# generated component shell without a backend. The names are repr.rs
+# `exports`; nothing here runs -- it only has to instantiate.
+STUB_BACKEND = """(core module $rocq
+    (memory (export "memory") 1)
+    (global (export "mem_ptr") (mut i32) (i32.const 0))
+    (global (export "result") (mut i32) (i32.const 0))
+    (global (export "out_of_mem") (mut i32) (i32.const 0))
+    (func (export "main_function"))
+    (table (export "table") 1 funcref))"""
+
 AHEAD_OF_THE_GATE = {
     "variant": "E-STRUCTURED",
 }
@@ -165,12 +178,14 @@ def check_example(generator: Path, example: Path) -> list[str]:
         dry_run(out)
         print(f"generated: {example.name} build rules resolve", flush=True)
 
-        # Now run what was generated, against the example's stub.
+        # Now run what was generated -- the adapter and the component
+        # shell it is spliced into -- against the example's stub.
         work = Path(tmp) / example.name
         shutil.copytree(example, work)
         for path in [work, *work.rglob("*")]:
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
         shutil.copy(out / "adapter.wat", work / "adapter.wat")
+        shutil.copy(out / "component.wat", work / "component.wat")
         for target, want in EXPECTED[example.name].items():
             got, failed = answers(work, target)
             if failed is not None:
@@ -319,7 +334,36 @@ def check_fixture(generator: Path, fixture: Path) -> list[str]:
                 f"{fixture.name}: the generated adapter is not a valid module:\n"
                 f"{parsed.stdout}{parsed.stderr}"
             ]
-    print(f"generated: {fixture.name} emits an adapter that parses", flush=True)
+
+        # The component shell, with a minimal backend spliced in where the
+        # build rules would put the real one. Parsing the result validates
+        # `canon lift` -- the component's view of the export against the
+        # adapter's actual signature -- which is where a wrongly rendered
+        # type import would otherwise surface only in a user's build.
+        adapter = (out / "adapter.wat").read_text()
+        core_adapter = adapter[adapter.index("(module") :].replace(
+            "(module", "(core module $adapter", 1
+        )
+        linked = (
+            (out / "component.wat")
+            .read_text()
+            .replace(";; @BACKEND@", STUB_BACKEND)
+            .replace(";; @ADAPTER@", core_adapter)
+        )
+        (out / "linked.wat").write_text(linked)
+        parsed = subprocess.run(
+            ["wasm-tools", "parse", str(out / "linked.wat"), "-o", str(out / "c.wasm")],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if parsed.returncode != 0:
+            return [
+                f"{fixture.name}: the generated component shell does not "
+                f"assemble around the generated adapter:\n"
+                f"{parsed.stdout}{parsed.stderr}"
+            ]
+    print(f"generated: {fixture.name} emits an adapter and a component that parse", flush=True)
     return []
 
 

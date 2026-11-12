@@ -507,8 +507,8 @@ impl RecordDecl {
 pub struct Layout {
     /// `result<T, error>`: size, alignment, and the offset its payload sits at.
     /// Computed with `wit_parser::SizeAlign`, which is the same code
-    /// `wasm-tools component new` uses -- so these cannot disagree with the
-    /// component the build assembles.
+    /// `wasm-tools` validates the assembled component with -- so these
+    /// cannot disagree with the component the build assembles.
     pub ret_size: u32,
     pub ret_align: u32,
     pub payload: u32,
@@ -626,8 +626,8 @@ pub struct Build {
     pub extraction_stem: String,
     /// The module inside `impl.v` to compile.
     pub impl_module: String,
-    /// The WIT directory `wasm-tools component embed` reads, relative to the
-    /// output directory.
+    /// The WIT directory the world was resolved from, relative to the
+    /// output directory -- where the error package is vendored.
     pub wit_dir: String,
     /// Passed through verbatim to `CertiRocq Compile Wasm`.
     pub flags: Vec<String>,
@@ -1200,8 +1200,8 @@ fn sum_of(
 /// ABI's own offset for it.
 ///
 /// The offsets come from `SizeAlign::field_offsets`, which is the code
-/// `wasm-tools component new` uses, so a field this adapter writes at offset
-/// 8 is the field the component reads at offset 8.
+/// `wasm-tools` validates the assembled component with, so a field this
+/// adapter writes at offset 8 is the field the component reads at offset 8.
 ///
 /// The projections are named here because that is where they collide: a Rocq
 /// `Record` declares its field names as top-level projections, so two records

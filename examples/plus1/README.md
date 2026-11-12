@@ -7,8 +7,8 @@ export plus1: func(val: u64) -> result<u64, error>;
 ```
 
 `impl.v`, `wit/world.wit`, `component.toml`, the `Makefile` and `stub/` are
-written by hand. `interface.v`, `extraction.v`, `adapter.wat` and `wit/deps`
-are `componentize-formal generate`'s output, committed so that a change to the
+written by hand. `interface.v`, `extraction.v`, `adapter.wat`,
+`component.wat` and `wit/deps` are `componentize-formal generate`'s output, committed so that a change to the
 emitter shows up as a diff here rather than as output nobody reads.
 `checks/generated.py` regenerates them and requires the bytes to match;
 `checks/generated.py --update` is the way to change them.
@@ -43,12 +43,13 @@ invent a failure. `plus1(2⁶³)` is a failure, because that `u64` has no
 | | Who writes it |
 | --- | --- |
 | [`wit/world.wit`](wit/world.wit) | you — the interface comes first |
-| [`wit/deps/certirocq-abi/`](wit/deps/certirocq-abi) | vendored, because `wasm-tools component embed` reads the package off disk |
+| [`wit/deps/certirocq-abi/`](wit/deps/certirocq-abi) | vendored, because resolving the world needs the package on disk beside it |
 | [`interface.v`](interface.v) | generated — the world as a `Module Type` |
 | [`impl.v`](impl.v) | **you** — the only file that is yours |
 | [`extraction.v`](extraction.v) | generated — the `CertiRocq Compile Wasm` call |
 | [`adapter.wat`](adapter.wat) | generated — the canonical-ABI glue |
-| [`Makefile`](Makefile) | generated — `wasm-merge`, `component embed`, `component new` |
+| [`component.wat`](component.wat) | generated — the component shell: the world's type, around the two core modules |
+| [`Makefile`](Makefile) | generated — `rocq c`, then splice the backend and the adapter into `component.wat` |
 | [`component.toml`](component.toml) | you — what the WIT file cannot say |
 | [`stub/`](stub) | neither; see below |
 
@@ -93,9 +94,9 @@ that both checks fire. It is **not** evidence about the backend. That needs
 The Rocq side compiles today. The link step needs the backend to export its
 function table, which the released CertiRocq does not do, so `flake.nix`
 builds CertiRocq from a branch that adds it
-([`TODO.md#table-export`](../../TODO.md#table-export)) — a build this example
-has not been run against yet. Against a CertiRocq *without* the export, the
-Makefile stops with the reason instead of at link time with a missing symbol:
+([`TODO.md#table-export`](../../TODO.md#table-export)). Against a CertiRocq
+*without* the export, the Makefile stops with the reason instead of at
+instantiation time with a missing export:
 
 ```console
 $ make run

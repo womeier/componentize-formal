@@ -113,7 +113,6 @@ $ make run
 rocq c interface.v
 rocq c impl.v
 rocq c extraction.v
-wasm-tools parse adapter.wat -o adapter.wasm
 error: this CertiRocq does not export its function table as
        "table", which the adapter links the compiled closures
        through. Move the `certirocq` flake input forward -- see
@@ -126,12 +125,13 @@ error: this CertiRocq does not export its function table as
 | | Who writes it |
 | --- | --- |
 | [`wit/world.wit`](wit/world.wit) | you — the interface comes first |
-| [`wit/deps/certirocq-abi/`](wit/deps/certirocq-abi) | vendored, because `wasm-tools component embed` reads the package off disk |
+| [`wit/deps/certirocq-abi/`](wit/deps/certirocq-abi) | vendored, because resolving the world needs the package on disk beside it |
 | [`interface.v`](interface.v) | generated — the world as a `Record` and a `Module Type` |
 | [`impl.v`](impl.v) | **you** — the only file that is yours |
 | [`extraction.v`](extraction.v) | generated — the `CertiRocq Compile Wasm` call |
 | [`adapter.wat`](adapter.wat) | generated — the canonical-ABI glue |
-| [`Makefile`](Makefile) | generated — `wasm-merge`, `component embed`, `component new` |
+| [`component.wat`](component.wat) | generated — the component shell: the world's type, around the two core modules |
+| [`Makefile`](Makefile) | generated — `rocq c`, then splice the backend and the adapter into `component.wat` |
 | [`component.toml`](component.toml) | you — what the WIT file cannot say |
 | [`stub/`](stub) | neither; it stands in for CertiRocq's output |
 

@@ -6,8 +6,8 @@
 //! garbage. So they live together, each with the source it came from, rather
 //! than scattered through the emitter as literals.
 //!
-//! The unit tests below pin the formulas against the values in the
-//! hand-written adapters under `examples/`. That catches a mistake in *this*
+//! The unit tests below pin the formulas against the values the adapters
+//! under `examples/` were first written with by hand. That catches a mistake in *this*
 //! file, not the backend changing underneath it. For that,
 //! `checks/representation.py` compiles functions with the real CertiRocq and
 //! holds every constant below that a compiled module shows -- the export
@@ -31,8 +31,8 @@ pub mod exports {
     /// Plain `table`, not LLVM's `__indirect_function_table`: the backend
     /// names its exports after what they are (`memory`, `result`, `mem_ptr`),
     /// and the entry added in `LambdaANF_to_Wasm.v:570` follows that. The
-    /// adapter's import has to spell it the same way or `wasm-merge` leaves
-    /// the import unresolved.
+    /// adapter's import has to spell it the same way or instantiating the
+    /// adapter with the backend's instance leaves the import unsatisfied.
     pub const TABLE: &str = "table";
 }
 
@@ -245,7 +245,8 @@ pub mod ordinal {
 mod tests {
     use super::*;
 
-    /// The values the hand-written `examples/negb` adapter encodes by hand.
+    /// The values the `examples/negb` adapter was first written with by
+    /// hand, before the emitter existed.
     #[test]
     fn bools_match_the_handwritten_adapter() {
         assert_eq!(BOOL_FALSE, 1);
@@ -254,7 +255,8 @@ mod tests {
         assert_eq!(immediate_ordinal(BOOL_TRUE), 1);
     }
 
-    /// The offsets the hand-written `examples/plus1` adapter encodes by hand.
+    /// The offsets the `examples/plus1` adapter was first written with by
+    /// hand, before the emitter existed.
     #[test]
     fn closure_layout_matches_the_handwritten_adapter() {
         assert_eq!(CLOSURE_FUNC_IDX_OFFSET, 4);

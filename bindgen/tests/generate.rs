@@ -15,7 +15,7 @@ use componentize_formal::emit::{self, plan::Repr, Plan};
 use componentize_formal::resolve_world;
 
 /// A world written to a scratch directory, with the error package vendored
-/// beside it so the layout matches what `component embed` will read.
+/// beside it, the layout anything resolving the directory will read.
 ///
 /// A fresh directory per call, not per world: the tests run as threads of one
 /// process, so two of them setting up the same fixture raced on these files.
@@ -985,9 +985,9 @@ fn every_generated_file_carries_the_marker() {
     }
 }
 
-/// Four files, and the names the build rules tie together.
+/// Five files, and the names the build rules tie together.
 #[test]
-fn the_artifacts_are_the_four_files() {
+fn the_artifacts_are_the_five_files() {
     let plan = plan_for("plus1", PLUS1);
     let paths: Vec<String> = emit::artifacts(&plan)
         .iter()
@@ -995,7 +995,13 @@ fn the_artifacts_are_the_four_files() {
         .collect();
     assert_eq!(
         paths,
-        ["interface.v", "extraction.v", "adapter.wat", "Makefile"]
+        [
+            "interface.v",
+            "extraction.v",
+            "adapter.wat",
+            "component.wat",
+            "Makefile"
+        ]
     );
 }
 
@@ -1033,9 +1039,9 @@ fn hand_written_files_are_not_overwritten() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// The vendored package has to be where `component embed` looks, and has to be
-/// left alone once it is there: the build reads that copy, so a local change
-/// to it may be deliberate.
+/// The vendored package has to be where a directory resolve looks, and has
+/// to be left alone once it is there: later resolves read that copy, so a
+/// local change to it may be deliberate.
 #[test]
 fn the_error_package_is_vendored_beside_the_world() {
     let plan = plan_for("plus1", PLUS1);

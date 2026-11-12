@@ -435,9 +435,10 @@ heap in use.
 
 Imported types (`use`) already pass the gate. Importing memory is ruled out
 twice: it is not the module the instantiation proof is about, and it would
-create a cycle (`wasm-merge` already resolves the compiled module's imports
-against the adapter's exports). So imports cost `instantiation.v` and a box,
-not the linking shape or the conversion.
+create a cycle (instantiating the adapter with the backend's instance resolves
+the adapter's imports; a backend importing from the adapter would need the
+other order too). So imports cost `instantiation.v` and a box, not the linking
+shape or the conversion.
 
 ### <a id="frontends"></a>The Lean frontend
 
@@ -524,7 +525,10 @@ verified is a research project, not a task:
 
 1. There is no component-model or canonical-ABI formalisation in WasmCert-Rocq,
    so the substrate would have to be built.
-2. Verified means no `wasm-merge`: the adapter would be generated into
+2. The backend already reaches the component byte-comparable to what
+   `rocq c` emitted -- the component holds it as its own core module and
+   nothing rewrites it. What remains unverified is the adapter module next
+   to it; making *that* verified would generate it into
    `mod_funcs`/`mod_exports`, reversing the separate-adapter design.
 3. The theorem — invoking the export on `⟦a⟧` either signals OOM or returns
    `⟦f a⟧` — needs a repeated-call invariant and a memory-layout induction per

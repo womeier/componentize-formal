@@ -65,7 +65,7 @@ fn parse_abi() -> Result<UnresolvedPackageGroup> {
 
 /// The shipped `error`'s case names, in declaration order --- which *is* the
 /// canonical-ABI discriminant, so the order is as load-bearing as the names.
-fn abi_error_cases() -> &'static [String] {
+pub(crate) fn abi_error_cases() -> &'static [String] {
     static CASES: OnceLock<Vec<String>> = OnceLock::new();
     CASES.get_or_init(|| {
         let mut resolve = Resolve::new();
@@ -119,9 +119,9 @@ pub fn error_case_names(resolve: &Resolve, ty: wit_parser::Type) -> Result<Vec<S
 /// Two layouts have to work and they want opposite things. A bare world file
 /// needs the shipped `certirocq:abi` pushed under it, so
 /// `use certirocq:abi/errors@0.1.0.{error}` resolves with nothing vendored. A
-/// directory laid out for `wasm-tools component embed` already carries the
-/// package under `deps/` --- it has to, since that copy is what the component
-/// build reads --- and pushing ours as well is a duplicate package, which
+/// directory laid out as a WIT package already carries the copy under
+/// `deps/` --- it has to, since that copy is what any later resolve of the
+/// directory reads --- and pushing ours as well is a duplicate package, which
 /// `wit-parser` panics on rather than reporting.
 ///
 /// Which one it is, is therefore decided by *looking* rather than by trying
@@ -145,9 +145,9 @@ pub fn resolve_world(wit: &Path, world: Option<&str>) -> Result<(Resolve, WorldI
     // discriminant while the component declares another.
     match vendored {
         true => check_vendored_abi(&resolve, wit)?,
-        // We supplied the package, but the directory the build embeds may
-        // still carry its own copy: resolving a *file* does not read the
-        // `deps/` beside it, and `component embed` does.
+        // We supplied the package, but the directory may still carry its
+        // own copy: resolving a *file* does not read the `deps/` beside it,
+        // and anything resolving the directory does.
         false => check_abi_beside(wit)?,
     }
 
@@ -238,11 +238,11 @@ fn check_vendored_abi(resolve: &Resolve, wit: &Path) -> Result<()> {
 
 /// The same check for the copy on disk beside a world file.
 ///
-/// `wasm-tools component embed` resolves the world from the directory, so that
-/// copy is what the component is built against even when this tool resolved
+/// Anything resolving the world from the directory -- this tool's next run,
+/// `wasm-tools component wit` -- reads that copy, even when this run resolved
 /// the world from one file. Without this, a vendored package whose cases had
-/// been reordered would pass the gate and produce a component that reports the
-/// wrong error.
+/// been reordered would pass the gate today and redefine every discriminant
+/// the next time anything resolves the directory.
 fn check_abi_beside(wit: &Path) -> Result<()> {
     let dir = match wit.is_dir() {
         true => wit.to_path_buf(),

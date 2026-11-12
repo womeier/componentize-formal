@@ -4,8 +4,9 @@
 The answers below were measured before the generator existed, so unlike the
 byte comparison in `checks/generated.py` they are a reference the emitter did
 not write. That makes this the only end-to-end evidence in the repo that the
-canonical-ABI glue is right: `wasm-merge`, `component embed`, `component new`, then `wasmtime` with
-the answers spelled out below.
+canonical-ABI glue is right: the backend and the adapter spliced into the
+component shell as its two core modules, then `wasmtime` with the answers
+spelled out below.
 
 Each expectation is written out in full rather than computed, because a
 computed expectation can be wrong in the same way the adapter is. Several of
@@ -33,7 +34,7 @@ them are load-bearing:
     adapter does is call through a stale closure.
 
 Runs against `stub/`, which stands in for CertiRocq's output, so it needs no
-Rocq and no nixpkgs pin -- just wasm-tools, binaryen and wasmtime.
+Rocq and no nixpkgs pin -- just wasm-tools and wasmtime.
 
     python3 checks/smoke.py
 """

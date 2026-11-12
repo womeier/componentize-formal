@@ -220,13 +220,13 @@ fn generate(input: &Input, force: bool) -> Result<ExitCode> {
         )
     })?;
 
-    // `wasm-tools component embed` reads a directory, so a world given as a
-    // single file is built from whatever else sits beside it.
+    // The world is resolved from a directory, so a world given as a single
+    // file is built from whatever else sits beside it.
     if w.cfg.wit.is_file() {
         eprintln!(
-            "note: the generated build rules read the whole of {}, not just {}, \
-             because that is what `wasm-tools component embed` resolves a world \
-             from",
+            "note: the world is resolved from the whole of {}, not just {}: \
+             a WIT directory carries its dependencies in `deps/` beside the \
+             file",
             wit_dir.display(),
             w.cfg.wit.display(),
         );
@@ -261,9 +261,9 @@ fn generate(input: &Input, force: bool) -> Result<ExitCode> {
         if !path.exists() {
             eprintln!(
                 "note: {} is outside the output directory, so the `{}` package was \
-                 not vendored into it. `wasm-tools component embed` resolves a world \
-                 from that directory alone, so copy the package to {} before \
-                 building, or keep the WIT inside the project.",
+                 not vendored into it. A world resolves from that directory alone, \
+                 so copy the package to {} before the next `generate` or \
+                 `wasm-tools` run against it, or keep the WIT inside the project.",
                 wit_dir.display(),
                 componentize_formal::abi_package_name(),
                 path.display(),
@@ -360,9 +360,9 @@ impl World {
         &self.resolve.worlds[self.world].name
     }
 
-    /// The directory `wasm-tools component embed` reads.
+    /// The directory the world is resolved from.
     ///
-    /// `embed` takes a directory, not a file, because it resolves the world's
+    /// A directory, not a file, because WIT resolves the world's
     /// dependencies from `deps/` beside it. A `--wit world.wit` therefore
     /// builds from the directory that file sits in.
     fn wit_dir(&self) -> Result<PathBuf> {

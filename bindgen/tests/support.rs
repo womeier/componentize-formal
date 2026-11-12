@@ -162,9 +162,9 @@ fn nesting_changes_no_answer() {
 
 /// The one refusal that is neither a representation this backend lacks nor a
 /// phase of the plan: a `record` with no fields. `wit-parser` accepts it and
-/// the component model has no type for it, so `wasm-tools component new`
-/// refuses the assembled module with "record type must have at least one
-/// field" -- an offset into a custom section, four build steps after the line
+/// the component model has no type for it, so `wasm-tools` refuses the
+/// assembled component with "record type must have at least one
+/// field" -- deep in the build, well after the line
 /// that caused it. The gate says it while the field list is still on screen.
 ///
 /// Nothing about the representation is in the way: a nullary constructor is an
@@ -514,10 +514,10 @@ fn the_config_selects_a_frontend() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// A world laid out for `wasm-tools component embed` carries `certirocq:abi`
-/// under `deps/`, because that copy is what the component build reads. Pushing
-/// the shipped one as well used to make `wit-parser` panic on a duplicate
-/// package, so the vendored layout has to resolve on its own.
+/// A world laid out as a WIT directory carries `certirocq:abi` under
+/// `deps/`, because that copy is what anything resolving the directory
+/// reads. Pushing the shipped one as well used to make `wit-parser` panic on
+/// a duplicate package, so the vendored layout has to resolve on its own.
 #[test]
 fn a_vendored_abi_package_resolves() {
     let dir = std::env::temp_dir().join(format!("bindgen-vendored-{}", std::process::id()));
@@ -592,11 +592,12 @@ fn a_vendored_abi_package_must_match_the_shipped_one() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// `wasm-tools component embed` resolves a world from the *directory*, and
+/// Everything else that resolves a world -- this tool's next run,
+/// `wasm-tools component wit` -- reads the *directory*, and
 /// `Resolve::push_path` on a single file does not even read the `deps/` beside
 /// it. So the two can see different copies of `certirocq:abi`, and the copy
 /// that matters is the one on disk: without this check a world passed as a file
-/// would be gated against the shipped package and built against a vendored one
+/// would be gated against the shipped package while a later resolve sees a vendored one
 /// whose cases had moved, producing a component that reports the wrong error.
 #[test]
 fn a_world_file_is_held_to_the_package_beside_it() {

@@ -6,13 +6,14 @@
 ;; 4-byte cells, nullary constructors as immediates. The canonical
 ;; ABI's: a return area with a discriminant and a payload at fixed
 ;; offsets. Nothing here is chosen -- the offsets come from
-;; bindgen/src/repr.rs and from the same layout code `wasm-tools
-;; component new` uses, so the two cannot disagree about where a byte
-;; goes.
+;; bindgen/src/repr.rs and from the same layout code `wasm-tools`
+;; validates the component with, so the two cannot disagree about
+;; where a byte goes.
 (module
-  ;; The compiled module. `wasm-merge` resolves every one of these
-  ;; against its exports, so none survives into the component -- which
-  ;; imports nothing at all. Names: repr.rs `exports`.
+  ;; The compiled module. The component instantiates the adapter with
+  ;; the backend's instance, so every one of these resolves against its
+  ;; exports and none is an import of the component itself. Names:
+  ;; repr.rs `exports`.
   (import "rocq" "memory" (memory 1))
   (import "rocq" "mem_ptr" (global $mem_ptr (mut i32)))
   (import "rocq" "result" (global $result (mut i32)))

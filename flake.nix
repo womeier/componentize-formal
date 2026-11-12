@@ -222,15 +222,14 @@
           '';
         });
 
-      # The component toolchain. wasm-tools does the embed/new steps and
-      # binaryen supplies wasm-merge; both come from the pin above, so they are
-      # cache hits rather than builds. bindgen is pinned against the wit-parser
+      # The component toolchain. wasm-tools assembles the component from the
+      # generated text and comes from the pin above, so it is a cache hit
+      # rather than a build. bindgen is pinned against the wit-parser
       # version matching this wasm-tools, so WIT parsing and canonical-ABI
       # layout are literally the same code the component assembly uses --
       # `checks.abi-version` holds that pinning to its word.
       componentTools = pkgs: [
         pkgs.wasm-tools   # 1.254.0
-        pkgs.binaryen     # 129, for wasm-merge
         pkgs.wasmtime     # 47.0.2
       ];
 
@@ -359,7 +358,6 @@
               pkgs.python3
               pkgs.gnumake
               pkgs.wasm-tools
-              pkgs.binaryen
               pkgs.wasmtime
             ];
           } ''
@@ -386,7 +384,6 @@
               pkgs.python3
               pkgs.gnumake
               pkgs.wasm-tools
-              pkgs.binaryen
               pkgs.wasmtime
             ];
           } ''
@@ -426,7 +423,6 @@
               pkgs.python3
               pkgs.gnumake
               pkgs.wasm-tools
-              pkgs.binaryen
               pkgs.wasmtime
             ];
           } ''

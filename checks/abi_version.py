@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Hold the wit-parser pin to the wasm-tools the toolchain actually ships.
 
-The generator computes canonical-ABI layout with wit-parser; `wasm-tools
-component new` computes the layout the host reads. They agree only because
-they are the same code at the same version -- wit-parser 0.N.x is the library
+The generator computes canonical-ABI layout with wit-parser; `wasm-tools`
+validates the assembled component against the layout the host reads. They
+agree only because they are the same code at the same version -- wit-parser 0.N.x is the library
 inside wasm-tools 1.N.x.
 
 Left unchecked this fails silently and expensively: the component builds, the

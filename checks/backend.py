@@ -47,10 +47,11 @@ them for real rather than through `make -n`.
 
 Half of the join needs no assertion here, because the build does not get this
 far without it: the adapter imports the backend's memory, bump pointer,
-`out_of_mem` flag, table and `main_function`, and an unresolved one makes
-`wasm-tools component embed` refuse the module ("failed to resolve import
-`rocq::...`"). The invocations below are the other half -- everything
-resolved, and the question is whether it meant the same thing.
+`out_of_mem` flag, table and `main_function`, and the component instantiates
+the adapter with the backend's instance, so `wasm-tools parse` refuses the
+assembly if any of them has no matching export. The invocations below are the
+other half -- everything resolved, and the question is whether it meant the
+same thing.
 
 The pairings are deliberate. `is-green` returns a `bool` rather than cycling
 red -> green -> blue, because a cycle survives both conversions being shifted
@@ -63,7 +64,7 @@ pointer: the same component, with the host granting exactly the pages the
 module declares as its minimum, so `memory.grow` fails and the adapter has to
 answer `err(out-of-memory)` rather than trap or answer nonsense.
 
-Needs Rocq, CertiRocq, wasm-tools, binaryen, wasmtime, and the generator:
+Needs Rocq, CertiRocq, wasm-tools, wasmtime, and the generator:
 
     python3 checks/backend.py --generator target/debug/componentize-formal
 """
@@ -399,10 +400,16 @@ def invoke(comp: Path, call: str, work: Path, cap: int | None = None) -> str:
     return answers[0]
 
 
-def min_pages(work: Path) -> int:
-    """The pages the merged module declares as its minimum."""
+def min_pages(comp: Path, work: Path) -> int:
+    """The pages the backend declares as its memory's minimum.
+
+    Read off the built component: the backend is embedded in it unmodified,
+    and its memory is the only memory *declaration* in there -- the adapter
+    only imports one, and an import prints as an `(import ...)` line this
+    pattern does not match.
+    """
     wat = run(
-        ["wasm-tools", "parse", str(work / "merged.wasm"), "-t"],
+        ["wasm-tools", "print", str(comp)],
         work,
         "disassembling",
     ).stdout
@@ -411,7 +418,7 @@ def min_pages(work: Path) -> int:
     )
     if found is None:
         raise SystemExit(
-            f"backend: no memory declaration in {work / 'merged.wasm'}, so the "
+            f"backend: no memory declaration in {comp}, so the "
             "heap cannot be capped at its minimum. The out-of-memory case "
             "needs one."
         )
@@ -436,7 +443,7 @@ def check_case(generator: Path, case: Path, work: Path) -> list[str]:
     if want.get("oom"):
         # Exactly the minimum: the module instantiates, and the first
         # `memory.grow` the allocator asks for fails.
-        cap = min_pages(work) * PAGE
+        cap = min_pages(comp, work) * PAGE
         args = want["answers"][0][0]
         call = f"{export}({args})"
         got = invoke(comp, call, work, cap=cap)

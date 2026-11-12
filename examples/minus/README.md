@@ -121,12 +121,13 @@ out-of-memory branch reachable at all.
 | | Who writes it |
 | --- | --- |
 | [`wit/world.wit`](wit/world.wit) | you — the interface comes first |
-| [`wit/deps/certirocq-abi/`](wit/deps/certirocq-abi) | vendored, because `wasm-tools component embed` reads the package off disk |
+| [`wit/deps/certirocq-abi/`](wit/deps/certirocq-abi) | vendored, because resolving the world needs the package on disk beside it |
 | [`interface.v`](interface.v) | generated — two WIT parameters as two Rocq arrows |
 | [`impl.v`](impl.v) | **you** — the only file that is yours |
 | [`extraction.v`](extraction.v) | generated — the `CertiRocq Compile Wasm` call |
 | [`adapter.wat`](adapter.wat) | generated — the canonical-ABI glue |
-| [`Makefile`](Makefile) | generated — `wasm-merge`, `component embed`, `component new` |
+| [`component.wat`](component.wat) | generated — the component shell: the world's type, around the two core modules |
+| [`Makefile`](Makefile) | generated — `rocq c`, then splice the backend and the adapter into `component.wat` |
 | [`component.toml`](component.toml) | you — what the WIT file cannot say |
 | [`stub/`](stub) | neither; it stands in for CertiRocq's output |
 
