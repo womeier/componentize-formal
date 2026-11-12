@@ -1,0 +1,21 @@
+package local:backend;
+
+// A record whose every field is erased, which is the one export that answers
+// without reading the value it is given *or* the value it gets back.
+//
+// `both` carries no information, so the backend erases the record itself the
+// way it erases `only`: there is no projection for either field and no body
+// function for a definition returning one. The adapter does not notice,
+// because a one-case enum field lifts to the only discriminant the type has
+// -- so neither cell is ever dereferenced (TODO.md#enum-unit).
+//
+// Worth running rather than reasoning about: if the erasure had dropped the
+// erased fields' *cells* instead of their projections, a record mixing them
+// with a live field would read the live one out of the wrong cell, and this
+// is the shape that says which it does.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum one { only }
+  record both { a: one, b: one }
+  export pick: func(p: both) -> result<both, error>;
+}

@@ -86,3 +86,18 @@ CertiRocq Compile Wasm --output "ctor-some" to_some.
 CertiRocq Compile Wasm --output "ctor-inl"  to_inl.
 CertiRocq Compile Wasm --output "ctor-inr"  to_inr.
 CertiRocq Compile Wasm --output "ctor-match-option" un_option.
+
+(* The constructor that is not an immediate. `one` has a single case, so a
+ * value of it tells a reader nothing, and the backend erases it: there is no
+ * projection for a field of this type, a `match` on it tests nothing, and
+ * `only` is *allocated* -- a three-word block -- rather than given `2*ord+1`.
+ *
+ * Measured for the record, not for a constant: the one-case `enum` lift
+ * answers with the only discriminant the type has and never reads the value,
+ * which is right whether the erasure is there or not. See TODO.md#enum-unit
+ * and `erased_unit_allocates`. *)
+Inductive one := only.
+
+Definition to_only (b : bool) := only.
+
+CertiRocq Compile Wasm --output "ctor-erased-unit" to_only.

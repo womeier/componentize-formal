@@ -193,6 +193,12 @@ pub fn to_rocq(repr: &Repr, slots: &[Flat], cells: &Cells, base: Base) -> Conver
             "(i32.or (i32.shl (i32.ne {} (i32.const 0)) (i32.const 1)) (i32.const 1))",
             at_width(&slots[0], "i32")
         )),
+        // The shift, for a one-case enum too, where [`from_rocq`] is a
+        // constant instead. Nothing on the Rocq side reads this value -- a
+        // constructor that distinguishes nothing has no projection and no
+        // test (TODO.md#enum-unit) -- and the immediate is what the value
+        // would be if the backend ever stopped erasing it, so sending it is
+        // right in the one case that can be read and harmless in the other.
         Repr::Enum { .. } => Conversion::pure(format!(
             "(i32.or (i32.shl {} (i32.const 1)) (i32.const 1))",
             at_width(&slots[0], "i32")
@@ -343,6 +349,17 @@ fn lower_sum(sum: &Sum, slots: &[Flat], cells: &Cells, base: Base) -> Conversion
 pub fn from_rocq(repr: &Repr, value: &str) -> Conversion {
     match repr {
         Repr::Int63 => Conversion::pure(format!("(i64.load {value})")),
+        // A one-case enum carries no information, so the discriminant is 0
+        // whatever the value is -- and the value is the one place this cannot
+        // look. The backend erases a constructor that distinguishes nothing:
+        // there is no projection for a field of such a type and no test in a
+        // `match` on it, and the constructor itself is built as a heap block
+        // rather than given the nullary immediate, so `2*ord+1` does not hold
+        // and halving it yields half an address. Answering with the only
+        // discriminant the type has is right under either representation --
+        // see TODO.md#enum-unit, and `checks.representation` measures which
+        // one the backend is on today.
+        Repr::Enum { cases: 1, .. } => Conversion::pure("(i32.const 0)".to_string()),
         Repr::Bool | Repr::Enum { .. } => {
             Conversion::pure(format!("(i32.shr_u {value} (i32.const 1))"))
         }
@@ -567,6 +584,41 @@ mod tests {
                 format!("(i32.shr_u {} (i32.const 1))", there.value)
             );
         }
+    }
+
+    /// A one-case enum is the pair where the inverse is *not* the inverse:
+    /// the lift answers with the only discriminant the type has and never
+    /// looks at the Rocq value, because the backend erases a constructor that
+    /// distinguishes nothing and the value is a block rather than `2*ord+1`
+    /// (TODO.md#enum-unit). The round trip is still the identity -- on 0 going
+    /// out and on the immediate coming back -- which is what
+    /// `checks/roundtrip.py` runs.
+    #[test]
+    fn a_one_case_enum_is_lifted_without_reading_it() {
+        let unit = Repr::Enum {
+            rocq_type: "one".into(),
+            cases: 1,
+            tag: Int::U8,
+        };
+        let there = to_rocq(
+            &unit,
+            &[slot("v", "i32")],
+            &Cells::Nothing,
+            Base("(local.get $box)"),
+        );
+        assert_eq!(
+            there.value,
+            "(i32.or (i32.shl (local.get $v) (i32.const 1)) (i32.const 1))"
+        );
+        let back = from_rocq(&unit, &there.value);
+        assert_eq!(back.value, "(i32.const 0)");
+        assert!(back.prologue.is_empty());
+        // The value it is handed makes no difference, which is the point: a
+        // block pointer halved is what the trap in TODO.md#enum-unit was.
+        assert_eq!(
+            from_rocq(&unit, "(local.get $whatever)").value,
+            "(i32.const 0)"
+        );
     }
 
     /// The boxed direction is two steps, and the address is what travels.

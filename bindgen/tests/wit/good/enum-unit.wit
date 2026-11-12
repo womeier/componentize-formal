@@ -1,0 +1,14 @@
+package local:ok;
+
+// A one-case enum. Inhabited -- `only` exists and is constructible -- but
+// carrying no information, which is the case the backend erases: there is no
+// projection for a field of this type, no test in a `match` on it, and the
+// constructor is built as a heap block rather than given the nullary
+// immediate. So the lift answers with the only discriminant the type has
+// instead of halving the value, which would halve an address
+// (TODO.md#enum-unit).
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum one { only }
+  export pick: func(o: one) -> result<one, error>;
+}

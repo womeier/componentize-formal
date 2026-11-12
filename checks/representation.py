@@ -62,6 +62,12 @@ MODULE_STEM = "conformance"
 # out of it. The adapter's lift makes the same test.
 MATCH_SOURCE = "ctor-match-option"
 
+# A definition returning the single constructor of a one-case inductive, which
+# is the one the backend erases rather than giving an immediate. Measured for
+# the record rather than for a constant: see `erased_unit_allocates` and
+# TODO.md#enum-unit.
+ERASED_UNIT_SOURCE = "ctor-erased-unit"
+
 # Where each measured immediate lives in bindgen/src/measured.rs, which
 # repr.rs holds itself to with a `const` assertion -- so a representation
 # change that reaches this file stops the generator compiling.
@@ -252,8 +258,8 @@ def func_bounds(wat: str, stem: str) -> dict[int, tuple[int, int]]:
     }
 
 
-def returned_immediate(names: dict[str, str], wat: str, stem: str) -> int:
-    """The constant a one-constructor function leaves in `result`.
+def definition_body(names: dict[str, str], wat: str, stem: str) -> str:
+    """The body of the function a definition's closure points at.
 
     `main_function` does not compute the definition; it allocates the closure
     for it and leaves that in `result`. The body sits in a separate function,
@@ -263,10 +269,6 @@ def returned_immediate(names: dict[str, str], wat: str, stem: str) -> int:
     so the export list does not say which one belongs to the definition. The
     code pointer does, and following it is exactly what the adapter does at
     runtime.
-
-    The wrapper of a function that ignores its argument and returns a nullary
-    constructor contains that constructor's immediate and nothing else, so
-    there is no need to run anything.
     """
     exported = {m.group("name"): int(m.group("index")) for m in EXPORT_FUNC.finditer(wat)}
     main = exported.get(names["MAIN_FUNCTION"])
@@ -304,16 +306,68 @@ def returned_immediate(names: dict[str, str], wat: str, stem: str) -> int:
         )
 
     start, end = bounds[wrapper]
-    constants = [int(m.group("value")) for m in I32_CONST.finditer(wat[start:end])]
+    return wat[start:end]
+
+
+def returned_immediate(names: dict[str, str], wat: str, stem: str) -> int:
+    """The constant a one-constructor function leaves in `result`.
+
+    The wrapper of a function that ignores its argument and returns a nullary
+    constructor contains that constructor's immediate and nothing else, so
+    there is no need to run anything.
+    """
+    body = definition_body(names, wat, stem)
+    constants = [int(m.group("value")) for m in I32_CONST.finditer(body)]
     if len(constants) != 1:
         raise Mismatch(
-            f"{stem}: the wrapper (function {wrapper}) holds "
-            f"{len(constants)} i32 constants ({constants}), not one. A "
-            "function returning a nullary constructor used to compile to "
-            "exactly that constant; the codegen changed and this check has to "
-            "be rewritten to follow it."
+            f"{stem}: the wrapper holds {len(constants)} i32 constants "
+            f"({constants}), not one. A function returning a nullary "
+            "constructor used to compile to exactly that constant; the "
+            "codegen changed and this check has to be rewritten to follow it."
         )
     return constants[0]
+
+
+def erased_unit_allocates(names: dict[str, str], wat: str, stem: str) -> list[str]:
+    """That the backend still erases a constructor distinguishing nothing.
+
+    `2*ord+1` holds for every nullary constructor that tells a reader
+    something. A one-case enum tells it nothing, and the backend erases it:
+    the projection for a field of such a type is compiled away, a `match` on
+    it tests nothing, and the constructor is *allocated* -- a three-word block
+    -- rather than given the immediate. Halving that block's address is what
+    answered `discriminant 10 out of range [0..1)` before the lift stopped
+    reading the value (TODO.md#enum-unit).
+
+    So this is the one constructor whose wrapper is *not* a single constant,
+    and that is what gets measured. The adapter does not depend on it either
+    way -- a one-case enum has one case, so its discriminant is 0 whatever the
+    value is -- which makes this a record of where the backend stands rather
+    than a load-bearing claim. If it starts failing, the erasure has stopped
+    and TODO.md#enum-unit is the section to revisit; nothing has to change.
+    """
+    body = definition_body(names, wat, stem)
+    constants = [int(m.group("value")) for m in I32_CONST.finditer(body)]
+    allocates = "i32.store" in body
+    if len(constants) == 1 and not allocates:
+        return [
+            f"{stem}: the backend returns the immediate {constants[0]} for a "
+            "constructor that distinguishes nothing, where it used to "
+            "allocate a block. The erasure this measured is gone -- see "
+            "TODO.md#enum-unit. Nothing is broken: the one-case `enum` lift "
+            "answers with the only discriminant the type has and never reads "
+            "the value, which is right either way. The section is what needs "
+            "updating."
+        ]
+    if not allocates:
+        return [
+            f"{stem}: the wrapper holds {len(constants)} i32 constants "
+            f"({constants}) and writes no memory, so neither the immediate "
+            "nor the allocated block this check knows how to tell apart is "
+            "what the backend emits now. The codegen moved; this check has "
+            "to be rewritten to follow it (TODO.md#enum-unit)."
+        ]
+    return []
 
 
 def boxed_ordinals(wats: dict[str, str], stems: list[str]) -> dict[str, int]:
@@ -490,6 +544,12 @@ def check_constructors(repr_text: str, names: dict[str, str], wats: dict[str, st
                 f"{want}. An adapter built on the wrong immediate reads the "
                 "wrong constructor and answers with a different one."
             )
+
+    # The constructor that is *not* an immediate, which no repr.rs constant
+    # can hold and which the one-case `enum` lift is written around.
+    problems += erased_unit_allocates(
+        names, wats[ERASED_UNIT_SOURCE], ERASED_UNIT_SOURCE
+    )
     return problems, found
 
 
@@ -608,6 +668,7 @@ def main() -> int:
             stems = [stem for stem, _, _ in CONSTRUCTORS]
             stems += [stem for pair in BOXED_PAIRS for stem, _ in pair]
             stems.append(MATCH_SOURCE)
+            stems.append(ERASED_UNIT_SOURCE)
             stems = list(dict.fromkeys(stems))
             modules = compile_wasm(args.constructor_source, Path(tmp), stems)
             ctor_problems, found = check_constructors(
@@ -655,8 +716,9 @@ def main() -> int:
     print("(swapped) and a three-case inductive (not swapped), the")
     print("independent boxed and unboxed ordinals of a type mixing both, and")
     print("Stdlib `option` and `sum` -- `None`'s immediate, `Some`, `inl` and")
-    print("`inr`'s ordinals, and the mask a compiled `match` tells a pointer")
-    print("from an immediate with.")
+    print("`inr`'s ordinals, the mask a compiled `match` tells a pointer from")
+    print("an immediate with, and that a constructor distinguishing nothing")
+    print("is still erased to a block rather than given an immediate.")
     return 0
 
 

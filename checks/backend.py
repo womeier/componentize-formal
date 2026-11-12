@@ -24,7 +24,11 @@ conversion in one direction only:
             is-zero     representation, and the same the other way round
     enum    is-green    an `enum` argument -- the branch no example under
             colour-of   examples/ has -- and an `enum` result, first case,
-                        a middle one and the last
+            pick        a middle one and the last; plus the one-case enum in
+            bump        both positions and as a record field, where the
+                        backend erases a constructor that distinguishes
+                        nothing and `2*ord+1` stops describing the value
+                        (TODO.md#enum-unit)
     arity   sub         two parameters, which the backend curries: one
                         application per argument (TODO.md#arity)
     arity6  mix         six parameters, so six applications in a chain --
@@ -168,6 +172,39 @@ EXPECTED: dict[str, dict] = {
         "export": "halve",
         "pins": [("Sum", "result")],
         "answers": [("4", "ok(some(2))"), ("3", "ok(none)"), ("0", "ok(some(0))")],
+    },
+    # The one-case enum, where `2*ord+1` is not what the backend produces:
+    # an informationless constructor is erased, so the value is a block and
+    # halving it halves an address. The lift answers with the only
+    # discriminant the type has instead (TODO.md#enum-unit).
+    "enum-unit": {
+        "export": "pick",
+        "pins": [("Enum", "param"), ("Enum", "result")],
+        "answers": [("only", "ok(only)")],
+    },
+    # The same enum as a record field, which is where the erasure could have
+    # moved the block's layout and does not.
+    "enum-unit-field": {
+        "export": "bump",
+        "pins": [
+            ("Enum", "param"),
+            ("Enum", "result"),
+            ("Record", "param"),
+            ("Record", "result"),
+        ],
+        "answers": [
+            ("{tag: only, n: 7}", "ok({tag: only, n: 8})"),
+            ("{tag: only, n: 0}", "ok({tag: only, n: 1})"),
+            # The field beside it still has its own range check.
+            ("{tag: only, n: 9223372036854775808}", "err(out-of-range)"),
+        ],
+    },
+    # And a record every one of whose fields is erased, where the adapter
+    # answers without dereferencing either value.
+    "enum-unit-both": {
+        "export": "pick",
+        "pins": [("Record", "param"), ("Record", "result")],
+        "answers": [("{a: only, b: only}", "ok({a: only, b: only})")],
     },
     "sum-both": {
         "export": "flip",

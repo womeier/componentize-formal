@@ -1,0 +1,17 @@
+package local:backend;
+
+// The one-case enum as a record field, which is the shape that found the
+// erasure: `bump({tag: only, n: 1})` answered `discriminant 36 out of range
+// [0..1)` while the lift was halving the cell.
+//
+// What it pins now is that the erasure moved nothing else. The compiled
+// `item` keeps a cell for `tag` even though the field has no projection, so
+// `n` is still the second cell and every canonical offset is unchanged --
+// the thing that would have broken quietly if the erased field had taken its
+// cell with it (TODO.md#enum-unit).
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum one { only }
+  record item { tag: one, n: u64 }
+  export bump: func(i: item) -> result<item, error>;
+}

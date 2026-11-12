@@ -1242,6 +1242,23 @@ world wrapper-world {
 }
 "#;
 
+const ONLY: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum one { only }
+  export pick: func(o: one) -> result<one, error>;
+}
+"#;
+
+const ITEM: &str = r#"package local:demo;
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum one { only }
+  record item { tag: one, n: u64 }
+  export pick: func(i: item) -> result<item, error>;
+}
+"#;
+
 const NOTHING: &str = r#"package local:demo;
 world wrapper-world {
   use certirocq:abi/errors@0.1.0.{error};
@@ -1565,5 +1582,88 @@ fn an_empty_record_is_an_immediate() {
     assert!(
         !adapter.contains("i64"),
         "nothing here is 64 bits wide:\n{adapter}"
+    );
+}
+
+/// A one-case enum is lifted without reading the value, because there is no
+/// value to read: the backend erases a constructor that distinguishes nothing,
+/// so `result` holds a block and `2*ord+1` does not describe it. Halving it
+/// instead gave `discriminant 10 out of range [0..1)` from the component
+/// boundary -- half an address (TODO.md#enum-unit).
+///
+/// The discriminant is 0 under either representation, which is what makes this
+/// a constant rather than a measurement: a one-case enum has one case, so the
+/// answer does not depend on how the backend spells its value. The *lowering*
+/// still sends `2*ord+1`, which nothing reads today and which is exactly right
+/// if the backend ever stops erasing it.
+#[test]
+fn a_one_case_enum_is_lifted_as_its_only_discriminant() {
+    let plan = plan_for("one", ONLY);
+    let adapter = emit::adapter::adapter(&plan);
+
+    // The result half of `result<one, error>`: a byte of discriminant, then
+    // the enum's own byte -- written as the constant, not as a shift.
+    assert!(
+        adapter.contains(
+            "(func $ok (param $ret i32) (param $val i32)\n    \
+             (i32.store8 (local.get $ret) (i32.const 0))\n    \
+             (i32.store8 offset=1 (local.get $ret) (local.get $val)))"
+        ),
+        "{adapter}"
+    );
+    assert!(
+        adapter.contains("(call $ok (local.get $ret) (i32.const 0))"),
+        "{adapter}"
+    );
+    // Nothing in the adapter inverts an immediate: this is the one enum whose
+    // Rocq value is never read.
+    assert!(!adapter.contains("shr_u"), "{adapter}");
+
+    // The parameter is unchanged -- the shift, and the bound check that says
+    // one case means the only discriminant is 0.
+    assert!(
+        adapter.contains("(i32.or (i32.shl (local.get $o) (i32.const 1)) (i32.const 1))"),
+        "{adapter}"
+    );
+    assert!(
+        adapter.contains("(if (i32.ge_u (local.get $o) (i32.const 1))"),
+        "{adapter}"
+    );
+}
+
+/// The same enum as a record field, which is where the erasure could have
+/// moved the layout and did not: the field is gone from the compiled
+/// projections, the *cell* is not, so `n` still sits in the second cell and
+/// the canonical offsets are unchanged. `checks.backend`'s `enum-unit` case
+/// runs this against the real backend.
+#[test]
+fn a_one_case_enum_field_keeps_its_cell() {
+    let plan = plan_for("item", ITEM);
+    assert_eq!(
+        slots(&plan.export.params[0]),
+        [("i_tag", "i32"), ("i_n", "i64")]
+    );
+    let adapter = emit::adapter::adapter(&plan);
+
+    // Lowering: the cell holds the immediate, as every enum field does, and
+    // `n`'s box goes down first at 12 with the cells at 0, 4 and 8.
+    assert!(
+        adapter.contains(
+            "(i32.store offset=4 (local.get $arg) \
+             (i32.or (i32.shl (local.get $i_tag) (i32.const 1)) (i32.const 1)))"
+        ),
+        "{adapter}"
+    );
+
+    // Lifting: the field's discriminant is the constant, and `n` is read out
+    // of the cell *after* it -- the one that would have moved if the erased
+    // field had taken its cell with it.
+    assert!(
+        adapter.contains(
+            "(i32.store8 offset=8 (local.get $ret) (i32.const 0))\n    \
+             (i64.store offset=16 (local.get $ret) \
+             (i64.load (i32.load offset=8 (local.get $val))))"
+        ),
+        "{adapter}"
     );
 }

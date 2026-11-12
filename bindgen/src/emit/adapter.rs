@@ -534,7 +534,10 @@ fn bounds(param: &super::plan::Param) -> Vec<(Vec<String>, Vec<String>, String)>
                 cases, rocq_type, ..
             } => found.push((
                 vec![
-                    format!("`{rocq_type}` has {cases} constructors, so {what} being"),
+                    match cases {
+                        1 => format!("`{rocq_type}` has one constructor, so {what} being"),
+                        n => format!("`{rocq_type}` has {n} constructors, so {what} being"),
+                    },
                     format!("{cases} or more names none of them."),
                 ],
                 guards,
@@ -829,6 +832,25 @@ fn lift(out: &mut String, e: &Export) {
                     repr::PRIM_PAYLOAD_SIZE
                 ),
                 "the value itself.".into(),
+            ],
+            // A one-case enum is the exception on both counts: the backend
+            // erases a constructor that distinguishes nothing, so `result`
+            // holds a block rather than the immediate, and there is nothing
+            // to invert -- the type has one discriminant and that is the
+            // answer (TODO.md#enum-unit).
+            Repr::Enum {
+                cases: 1,
+                rocq_type,
+                ..
+            } => vec![
+                format!("`{rocq_type}` has one constructor, so the discriminant is"),
+                format!(
+                    "0 whatever `{}` holds -- and what it holds is a block,",
+                    exports::RESULT
+                ),
+                "because the backend erases a constructor that distinguishes".into(),
+                "nothing, so there is no immediate to invert".into(),
+                "(TODO.md#enum-unit).".into(),
             ],
             Repr::Bool | Repr::Enum { .. } => vec![
                 format!(

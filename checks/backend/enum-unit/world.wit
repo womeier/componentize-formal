@@ -1,0 +1,21 @@
+package local:backend;
+
+// A one-case enum, in both positions. It is inhabited -- `only` exists and
+// `impl.v` builds it -- but it carries no information, and that is the case
+// the backend erases: there is no projection for a field of such a type, no
+// test in a `match` on it, and the constructor is built as a heap block
+// rather than given the nullary immediate.
+//
+// So `2*ord+1` does not describe the value, and a lift that halved it
+// answered `discriminant 10 out of range [0..1)` from the component boundary
+// -- half an address. The lift writes the only discriminant the type has
+// instead, which is right under either representation (TODO.md#enum-unit).
+//
+// `pick` returns `only` rather than its argument on purpose: forwarding would
+// hand back whatever the adapter lowered and pass without the backend ever
+// building the value.
+world wrapper-world {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum one { only }
+  export pick: func(o: one) -> result<one, error>;
+}

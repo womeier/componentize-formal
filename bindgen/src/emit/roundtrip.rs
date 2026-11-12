@@ -104,7 +104,20 @@ pub fn module(plan: &Plan) -> (String, Vec<Pair>) {
         // them -- a discriminant and a payload at byte offsets, or a field
         // per cell. `checks/backend.py` runs those both ways against the real
         // backend instead.
-        if matches!(repr, Repr::Sum(_) | Repr::Record(_)) {
+        //
+        // A one-case `enum` is not here either, for a different reason. It has
+        // one core value, but its lift is a constant -- the only discriminant
+        // the type has, read off the type rather than off the value
+        // (TODO.md#enum-unit) -- so composing the two conversions is the
+        // identity whatever the lowering emits, and the trip would pass on a
+        // lowering that was wrong. The immediate it would be run with is not a
+        // value the backend produces either: it erases the constructor and
+        // allocates. `checks/backend.py` carries the case against the real
+        // backend instead.
+        if matches!(
+            repr,
+            Repr::Sum(_) | Repr::Record(_) | Repr::Enum { cases: 1, .. }
+        ) {
             continue;
         }
         let this = pair(repr);
@@ -230,6 +243,24 @@ fn skipped(plan: &Plan) -> Vec<Skipped> {
                 "a field per cell is not one core value, so there is no function to \
                  compose with itself; checks/backend.py runs both directions against \
                  the real backend instead",
+            ),
+            Repr::Enum {
+                rocq_type,
+                cases: 1,
+                ..
+            } => (
+                plan.inductives
+                    .iter()
+                    .find(|i| &i.rocq_name == rocq_type)
+                    .expect("every enum representation declared its inductive")
+                    .wit_name
+                    .clone(),
+                rocq_type.clone(),
+                "its lift answers with the only discriminant the type has and never \
+                 reads the value (TODO.md#enum-unit), so composing the two \
+                 conversions is the identity whatever the lowering emits; \
+                 checks/backend.py runs both directions against the real backend \
+                 instead",
             ),
             _ => continue,
         };
@@ -397,6 +428,12 @@ fn pair(repr: &Repr) -> Pair {
         ),
         // Every case, because the immediate is per case and a shift that was
         // right for the first one can be wrong for the last.
+        // `module` filters this one out too: see the note there.
+        Repr::Enum {
+            cases: 1,
+            rocq_type,
+            ..
+        } => unreachable!("`{rocq_type}` has a round trip that cannot fail"),
         Repr::Enum { cases, .. } => (
             (0..*cases).map(|d| d.to_string()).collect(),
             (0..*cases as u32)

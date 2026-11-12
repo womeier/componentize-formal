@@ -1,0 +1,13 @@
+package local:ok;
+
+// The one-case enum as a record field, which is where the discriminant is
+// written into memory beside another field rather than into the return area
+// on its own. The record's block keeps a cell for it -- the field is erased,
+// the cell is not -- so the offsets are the canonical ABI's either way
+// (TODO.md#enum-unit).
+world w {
+  use certirocq:abi/errors@0.1.0.{error};
+  enum one { only }
+  record item { tag: one, n: u64 }
+  export pick: func(i: item) -> result<item, error>;
+}
