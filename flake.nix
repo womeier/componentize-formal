@@ -233,6 +233,12 @@
         pkgs.wasmtime     # 47.0.2
       ];
 
+      # `wkg` fetches examples/wasi-http's dependency tree from the digests in
+      # its wkg.lock, which is what keeps that tree traceable to upstream
+      # instead of hand-copied. Dev shells only: fetching needs a network, so
+      # no check runs it -- `make check-wit` there works off what is on disk.
+      witTools = pkgs: [ pkgs.wkg ];  # 0.15.1
+
       rustTools = pkgs: [
         pkgs.cargo        # 1.97.0
         pkgs.rustc
@@ -437,7 +443,8 @@
             (rocqPkgs pkgs).coq
             (certirocqFor pkgs)
             pkgs.rust-analyzer
-          ] ++ rustTools pkgs ++ componentTools pkgs ++ scriptTools pkgs;
+          ] ++ rustTools pkgs ++ componentTools pkgs ++ scriptTools pkgs
+            ++ witTools pkgs;
         };
 
         # The same shell without the Rocq package set, for working on the
@@ -445,7 +452,8 @@
         # nothing you are about to run needs it.
         bindgen = pkgs.mkShell {
           packages = [ pkgs.rust-analyzer ]
-            ++ rustTools pkgs ++ componentTools pkgs ++ scriptTools pkgs;
+            ++ rustTools pkgs ++ componentTools pkgs ++ scriptTools pkgs
+            ++ witTools pkgs;
         };
       });
     };

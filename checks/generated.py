@@ -72,11 +72,6 @@ GENERATED = [
     "wit/deps/certirocq-abi/errors.wit",
 ]
 
-# Examples written ahead of the gate: hand-written throughout, measured, and
-# running, for constructs `generate` still turns away. They have no generated
-# counterpart to compare against -- what is checked instead is that the
-# generator *refuses* them, with the code below. An example the gate silently accepted and emitted
-# something for would be worse than one it rejects.
 # The least module that satisfies the adapter's imports, for assembling a
 # generated component shell without a backend. The names are repr.rs
 # `exports`; nothing here runs -- it only has to instantiate.
@@ -88,8 +83,21 @@ STUB_BACKEND = """(core module $rocq
     (func (export "main_function"))
     (table (export "table") 1 funcref))"""
 
+# Examples written ahead of the gate, for constructs `generate` still turns
+# away. They have no generated counterpart to compare against -- what is
+# checked instead is that the generator *refuses* them, with the code below.
+# An example the gate silently accepted and emitted something for would be
+# worse than one it rejects, and the day one of these is supported this check
+# fails and says which.
+#
+# `variant` is hand-written, measured and running; `wasi-http` is the opposite
+# end -- a real-world target with no implementation, whose refusal names more
+# than one code (E-IMPORT eleven times, then E-EXPORT-INTERFACE and
+# E-NO-EXPORT). Only one is asserted, and E-IMPORT is the one that has to go
+# first: the others are downstream of the imports being gone.
 AHEAD_OF_THE_GATE = {
     "variant": "E-STRUCTURED",
+    "wasi-http": "E-IMPORT",
 }
 
 

@@ -114,6 +114,23 @@ EXPECTED: dict[str, dict[str, list[str]]] = {
             "add-byte(exactly(41)) with the heap exhausted = err(out-of-memory)",
         ],
     },
+    # The one example with nothing to run: no impl.v, no build, and a world
+    # the gate refuses outright (examples/wasi-http/README.md). What can still
+    # be checked without a network is that wit/ resolves and what it resolves
+    # to -- wit/deps is fetched from wkg.lock rather than copied by hand, so a
+    # package moving underneath that lock changes a line here. The refusal
+    # itself is checks/generated.py's half.
+    "wasi-http": {
+        "check-wit": [
+            "vendored: wasi:cli@0.2.8",
+            "vendored: wasi:clocks@0.2.8",
+            "vendored: wasi:filesystem@0.2.8",
+            "vendored: wasi:http@0.2.8",
+            "vendored: wasi:io@0.2.8",
+            "vendored: wasi:random@0.2.8",
+            "vendored: wasi:sockets@0.2.8",
+        ],
+    },
 }
 
 
