@@ -8,7 +8,7 @@ This project is a WIP. Don't expect a stable CLI interface.
 This tool allows developing formally-verified [Wasm components](https://component-model.bytecodealliance.org/) in Rocq.
 What [ComponentizeJS](https://github.com/bytecodealliance/componentize-js) is to JavaScript, this tool is for theorem provers like Rocq or Lean.
 It requires a `.wit` file describing the Wasm component interface, for which it generates a project scaffolding and build setup.
-Support for Lean and Agda may be added in the future, since they are supported [Peregrine](https://peregrine-project.github.io/) frontends.
+Currently, only Rocq is supported, but Lean and Agda may be added in the future, since they are [Peregrine](https://peregrine-project.github.io/) frontends.
 
 ## Verification status
 The extraction from Rocq to a Wasm module is verified.
@@ -86,7 +86,7 @@ The following features are currently supported.
 | several parameters | **supported** | the backend curries, so the adapter applies them one at a time: a box and a `call_indirect` per argument, with the next closure read out of `result` in between ([`examples/minus`](examples/minus)) |
 | no parameters, or no result | [not supported](TODO.md#arity) | different adapter prologue |
 | several exports | [not supported](TODO.md#multi-export) | one compiled `MkExports` term carrying every closure |
-| imports | [not supported](TODO.md#imports) | `mod_imports := []` is baked into the correctness proof |
+| imports | [not supported](TODO.md#imports) | experimental support exists for CertiRocq's wasm backend, not yet upstream|
 | `export some:pkg/iface` | [not planned](TODO.md#exported-interfaces) | only top-level function exports |
 | Rocq as the source language | **supported** | the default, and the only one implemented |
 | Lean | [not supported](TODO.md#frontends) | selectable (`--frontend lean`) and rejected with a reason; the unaffiliated [Peregrine project](https://peregrine-project.github.io/) has a Lean frontend into λ□ feeding this same backend, so only the interface file and the compile driver would differ |
