@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """Run the generated glue against the module CertiRocq actually emits.
 
-Every other check in this repository stops short of that. `checks.smoke` and
-`checks.generated` assemble components, but against each example's `stub/`,
-which is a hand-written module standing in for the backend's output;
-`checks.representation` compiles with the real CertiRocq but only *reads* the
-module it gets. So the one step nothing ran was the join: `wasm-merge` putting
-a generated adapter together with a compiled Rocq program and the result
-answering correctly. This is layer 2 of TODO.md#representation.
-
-What the join can get wrong is not subtle, and is invisible to the stub path,
-because the stub is written to the same `repr.rs` the adapter is: an export
-the backend renames, a `call_indirect` type index that moved, a global the
-adapter reads as mutable that is not. The stub agrees with the adapter about
-all of it by construction.
+Layer 2 of TODO.md#representation, and the one step nothing else ran: the
+join. `checks.smoke` and `checks.generated` assemble components, but against
+each example's `stub/` -- a hand-written module standing in for the backend --
+and `checks.representation` compiles with the real CertiRocq but only *reads*
+what it gets. What the join can get wrong is invisible to the stub path,
+because the stub is written to the same `repr.rs` the adapter is and agrees
+with it by construction: an export the backend renames, a `call_indirect` type
+index that moved, a global the adapter reads as mutable that is not.
 
 One case per representation per position, because an export uses each
 conversion in one direction only:
@@ -23,59 +18,50 @@ conversion in one direction only:
     bool    to-int      a `bool` argument, with a result of another
             is-zero     representation, and the same the other way round
     enum    is-green    an `enum` argument -- the branch no example under
-            colour-of   examples/ has -- and an `enum` result, first case,
-            pick        a middle one and the last; plus the one-case enum in
-            bump        both positions and as a record field, where the
-                        backend erases a constructor that distinguishes
-                        nothing and `2*ord+1` stops describing the value
-                        (TODO.md#enum-unit)
+            colour-of   examples/ has -- and an `enum` result: first case, a
+            pick        middle one, the last. `pick` and `bump` add the
+            bump        one-case enum, where `2*ord+1` stops describing the
+                        value (TODO.md#enum-unit), bare and as a record field
     arity   sub         two parameters, which the backend curries: one
                         application per argument (TODO.md#arity)
-    arity6  mix         six parameters, so six applications in a chain --
-                        where a box sized once and shared, so that every
-                        application reads the same cells, is an answer
-                        this case can see six times over (TODO.md#arity)
-    record  is-empty    a `record` argument, read through the backend's own
-            whole       compiled projections, a `record` result, read back
-            bump        through its cells, and a nested one, where a cell of
-                        the outer block points at another block. Every record
-                        here has two fields, because a one-field one is not a
-                        block at all (TODO.md#record-unboxed) -- which is what
-                        `bump` found when its inner record had one
+    arity6  mix         six, so six applications in a chain -- where a box
+                        sized once and shared, so every application reads the
+                        same cells, is an answer this case sees six times over
+    record  is-empty    a `record` argument through the backend's own compiled
+            whole       projections, a `record` result read back through its
+            bump        cells, and a nested one, a cell pointing at another
+                        block. Two fields everywhere, because a one-field
+                        record is not a block at all (TODO.md#record-unboxed)
+                        -- which is what `bump` found when its inner one had
+                        one
     sum     unwrap-or   an `option` in each position -- one case of each
             halve       CertiRocq kind, so the tag bit is what tells them
-                        apart -- and a `result<u64, bool>` as a *value*,
-            flip        where both cases are boxed and the ordinal in the
-                        block picks one
-            dig         a sum inside a sum, in both positions
-            shade       an `enum` inside a sum, where the block's field holds
-                        an immediate rather than a pointer
+            flip        apart -- a `result<u64, bool>` as a *value*, both
+            dig         cases boxed so the ordinal picks one, a sum inside a
+            shade       sum, and an `enum` inside a sum, where the block's
+                        field holds an immediate rather than a pointer
 
 Each case is a world and an `impl.v` and nothing else: the interface, the
-extraction, the adapter and the build rules are generated, and `make` is what
-runs, so the generated build rules are driven for real rather than by
-`make -n`.
+extraction, the adapter and the build rules are generated, and `make` runs
+them for real rather than through `make -n`.
 
-Half of the join is established by the build getting that far at all, which is
-why there is no assertion about it here: the adapter imports the backend's
-memory, bump pointer, `out_of_mem` flag, table and `main_function`, and if
-`wasm-merge` leaves any of them unresolved -- a name the adapter asks for and
-the compiled module does not have -- `wasm-tools component embed` refuses the
-module outright ("failed to resolve import `rocq::...`"). The invocations
-below are about the other half, where everything resolved and the question is
-whether it meant the same thing.
+Half of the join needs no assertion here, because the build does not get this
+far without it: the adapter imports the backend's memory, bump pointer,
+`out_of_mem` flag, table and `main_function`, and an unresolved one makes
+`wasm-tools component embed` refuse the module ("failed to resolve import
+`rocq::...`"). The invocations below are the other half -- everything
+resolved, and the question is whether it meant the same thing.
 
-Each pairing is deliberate. `is-green` returns a `bool` rather than cycling
+The pairings are deliberate. `is-green` returns a `bool` rather than cycling
 red -> green -> blue, because a cycle survives both conversions being shifted
-by the same wrong amount -- a rotation commutes with a rotation -- while
-asking which case it is does not. `sub` is not commutative, so applying the
-two arguments in the wrong order is an answer this check can see.
+by the same wrong amount while asking which case it is does not. `sub` is not
+commutative, so applying its arguments in the wrong order is an answer this
+check can see.
 
-The out-of-memory channel runs here too, on the real backend rather than on a
-stub with a poisoned bump pointer: the same component, invoked with the host
-granting exactly the pages the module declares as its minimum, so the
-allocator's `memory.grow` fails, the backend sets `out_of_mem` and the adapter
-has to answer `err(out-of-memory)` instead of trapping or answering nonsense.
+Out-of-memory runs here too, on a real allocator rather than a poisoned bump
+pointer: the same component, with the host granting exactly the pages the
+module declares as its minimum, so `memory.grow` fails and the adapter has to
+answer `err(out-of-memory)` rather than trap or answer nonsense.
 
 Needs Rocq, CertiRocq, wasm-tools, binaryen, wasmtime, and the generator:
 
