@@ -56,7 +56,7 @@ asserts each code is mentioned here.
 | [`bindgen/src/emit/`](bindgen/src/emit) | the emitters: `rocq.rs`, `adapter.rs`, `build.rs`, each a pure function of the plan |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
-| [`examples/`](examples) | the pipeline end to end: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), [`record`](examples/record) (hand-written inputs, committed generated glue), [`variant`](examples/variant) (ahead of the gate, so still hand-written throughout), and the vendored [`wasi-http`](examples/wasi-http) WIT |
+| [`examples/`](examples) | the pipeline end to end: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), [`record`](examples/record) (hand-written inputs, committed generated glue), [`variant`](examples/variant) (ahead of the gate, so still hand-written throughout), and the [`wasi-http`](examples/wasi-http) WIT, fetched from its lock |
 | [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
 
@@ -227,8 +227,10 @@ world proxy {
 }
 ```
 
-[`examples/wasi-http`](examples/wasi-http) holds the vendored 0.2.8 WIT;
-`generate` refuses it today. What has to land first:
+[`examples/wasi-http`](examples/wasi-http) holds the 0.2.8 WIT, fetched by
+`wkg` from the digests in its `wkg.lock`; `generate` refuses the world today
+with `E-IMPORT`, `E-EXPORT-INTERFACE` and `E-NO-EXPORT`, which
+`checks/generated.py` holds it to. What has to land first:
 
 | Feature | Where `wasi:http` needs it | |
 | --- | --- | --- |
