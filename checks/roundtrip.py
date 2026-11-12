@@ -52,6 +52,7 @@ Needs the generator and `wasmtime`:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -155,8 +156,17 @@ def invoke(module: Path, func: str, value: str) -> str:
     toolchain is pinned by revision (`TODO.md#pinning`), so the warning is not
     a moving target.
     """
+    # `wasmtime run` writes its compilation cache under the cache directory
+    # and refuses to run at all when it cannot create it. In the Nix sandbox
+    # HOME is the non-existent /homeless-shelter, so point both knobs beside
+    # the module: the cache is thrown away with the work directory, which is
+    # what a check wants anyway. `checks/smoke.py` and `checks/backend.py` do
+    # the same.
+    home = module.parent / "home"
+    (home / ".cache").mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         ["wasmtime", "run", "--invoke", func, str(module), value],
+        env=dict(os.environ, HOME=str(home), XDG_CACHE_HOME=str(home / ".cache")),
         text=True,
         capture_output=True,
         check=False,
