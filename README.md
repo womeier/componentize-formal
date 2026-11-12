@@ -17,7 +17,7 @@ The intention is that there should be no crashes or silent failures.
 
 ## Quickstart
 See [`examples/plus1`](examples/plus1) for the whole pipeline end to end, including the
-hand-written glue the generator is checked against.
+committed generated glue and the hand-written inputs it comes from.
 
 ## How to use
 Given `world.wit`, the generator emits:
@@ -105,5 +105,5 @@ so a green checkout is a green branch:
 | `representation` | compiles Rocq functions with the real CertiRocq and checks the emitted modules against every claim in `repr.rs`, including the constructor immediates and the independent boxed/unboxed ordinals |
 | `backend` | compiles a world per representation with the real CertiRocq, merges it with its generated adapter, and invokes the component: the one check where both halves of the merge are real, and the only place the out-of-memory channel fires on the actual allocator |
 | `smoke` | assembles each example into a component and checks what `wasmtime` says it answers |
-| `generated` | generates for each example's world and requires the result to be the hand-written files token for token, then assembles the generated adapter and requires the same answers. For an example ahead of the gate, requires instead that the generator refuses it with the right code and writes nothing |
+| `generated` | generates for each example's world and requires the result to equal the committed files byte for byte — `checks/generated.py --update` rewrites them — then assembles the generated adapter and requires the same answers. For an example ahead of the gate, requires instead that the generator refuses it with the right code and writes nothing |
 | `roundtrip` | emits each conversion in both orders and runs it under `wasmtime`, requiring the value back unchanged. An export adapter uses each direction in one position only; the other order is the one [function imports](TODO.md#imports) will need, so it is run before there is anything that needs it |

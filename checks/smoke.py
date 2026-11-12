@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Assemble every example into a component and check what it answers.
 
-The examples are hand-written in the shape the generator has to emit, so this
-is the only end-to-end evidence in the repo that the canonical-ABI glue is
-right: `wasm-merge`, `component embed`, `component new`, then `wasmtime` with
+The answers below were measured before the generator existed, so unlike the
+byte comparison in `checks/generated.py` they are a reference the emitter did
+not write. That makes this the only end-to-end evidence in the repo that the
+canonical-ABI glue is right: `wasm-merge`, `component embed`, `component new`, then `wasmtime` with
 the answers spelled out below.
 
 Each expectation is written out in full rather than computed, because a

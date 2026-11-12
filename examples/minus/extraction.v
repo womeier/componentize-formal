@@ -1,6 +1,9 @@
-(* What `componentize-formal generate` emits from wit/world.wit and
- * component.toml: the compile invocation, with the configured flags and the
- * `--output` name the build rules expect. *)
+(* componentize-formal generate wrote this from the world `wrapper-world` and
+ * component.toml.
+ *
+ * `--output` is the name the generated build rules expect the backend to
+ * write, so changing it here alone breaks the build rather than
+ * renaming anything. *)
 From CertiRocq.Plugin Require Import CertiRocq.
 Require Import impl.
 

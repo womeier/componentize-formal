@@ -6,13 +6,12 @@ Two parameters, which means the adapter applies them one at a time:
 export minus: func(a: u64, b: u64) -> result<u64, error>;
 ```
 
-These files are hand-written, measured against the real backend, and they run.
-They were written while the gate still refused this world (`E-ARITY-N`), as
-the shape the generator would have to emit — and the generator emits exactly
-them now, token for token, which is what `checks.generated` holds it to. The
-same was true of [`plus1`](../plus1) before the emitter existed. Nothing here
-is regenerated: a reference that is refreshed from the thing it is evidence
-about is not evidence ([`TODO.md#arity`](../../TODO.md#arity)).
+These files were written by hand while the gate still refused this world
+(`E-ARITY-N`), measured against the real backend, and run — as the shape the
+generator would have to emit. It emits exactly them now, so the glue committed
+here is its output, held to the byte by `checks.generated`; see
+[`plus1`](../plus1) for which files those are
+([`TODO.md#arity`](../../TODO.md#arity)).
 
 ```console
 $ nix develop

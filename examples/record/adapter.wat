@@ -1,29 +1,14 @@
-;; Canonical-ABI glue for
+;; componentize-formal generate wrote this from the world `wrapper-world`:
 ;;
-;;     record span { start: u64, byte-length: u64 }
 ;;     export grow: func(s: span) -> result<span, error>
 ;;
-;; The reference `componentize-formal generate` is held to for records, by
-;; checks.generated, token for token with the comments dropped. Written by
-;; hand before the emitter could produce it, measured against a module the
-;; real CertiRocq compiled, and running: checks.smoke holds it to its six
-;; answers.
-;;
-;; Two things in it changed when the emitter caught up, and both were the
-;; example being out of step with a convention the sum work settled after it
-;; was written rather than the emitter being talked into something:
-;;
-;;   * the field payloads are reserved inside the argument's own block and
-;;     addressed off `$arg`, not off `$ret`. Every parameter's cells are its
-;;     own, which is what lets a second record parameter exist;
-;;   * `$ok` takes the Rocq value rather than one core parameter per field,
-;;     and reads the fields itself. One parameter per field does not survive
-;;     a field that is an `option`, which has no single core value to pass.
-;;
-;; The record is what makes this different from `plus1`. A WIT record of two
-;; `u64`s flattens into two core `i64` parameters, so nothing arrives by
-;; pointer -- and the Rocq side wants a boxed constructor with a pointer per
-;; field, so the adapter has to *build* a value rather than box one.
+;; It bridges two value representations. CertiRocq's: a bump allocator,
+;; 4-byte cells, nullary constructors as immediates. The canonical
+;; ABI's: a return area with a discriminant and a payload at fixed
+;; offsets. Nothing here is chosen -- the offsets come from
+;; bindgen/src/repr.rs and from the same layout code `wasm-tools
+;; component new` uses, so the two cannot disagree about where a byte
+;; goes.
 (module
   ;; The compiled module. `wasm-merge` resolves every one of these
   ;; against its exports, so none survives into the component -- which
@@ -70,12 +55,7 @@
     ;; The return area and the boxed argument come off the same bump
     ;; pointer the backend allocates from, before `main_function` runs,
     ;; so the heap is still empty and the reservation cannot fail in
-    ;; practice:
-    ;;
-    ;;   $ret + 0   .. 24   the canonical-ABI return area
-    ;;   $arg + 0   .. 12   the `span` itself: [ordinal, &start, &byte-length]
-    ;;   $arg + 12  .. 20   `start`, boxed
-    ;;   $arg + 20  .. 28   `byte-length`, boxed
+    ;; practice.
     ;;
     ;; 8-aligned because the host rejects a misaligned return area,
     ;; and `mem_ptr` is only 4-aligned in general (repr.rs:

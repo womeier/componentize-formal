@@ -6,9 +6,20 @@ The whole pipeline for the one export shape the gate accepts today:
 export plus1: func(val: u64) -> result<u64, error>;
 ```
 
-Everything here except `impl.v` is hand-written in the shape
-`componentize-formal generate` has to emit, so that generation has a target
-known to work rather than a guess. It runs:
+`impl.v`, `wit/world.wit`, `component.toml`, the `Makefile` and `stub/` are
+written by hand. `interface.v`, `extraction.v`, `adapter.wat` and `wit/deps`
+are `componentize-formal generate`'s output, committed so that a change to the
+emitter shows up as a diff here rather than as output nobody reads.
+`checks/generated.py` regenerates them and requires the bytes to match;
+`checks/generated.py --update` is the way to change them.
+
+They were written by hand first, before the emitter existed, and measured
+against the real backend. The emitter caught up and now reproduces them, so
+what is committed is its output -- but the expected answers below are still
+a reference it did not write, and that is the half of `checks.generated` with
+teeth.
+
+It runs:
 
 ```console
 $ nix develop

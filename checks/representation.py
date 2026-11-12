@@ -4,8 +4,10 @@
 `bindgen/src/repr.rs` records the shape of the module the backend produces --
 the export names the adapter links to, the function type indices it calls
 through, that the module imports nothing and has a single memory. Its unit
-tests pin those constants against the hand-written adapters, which catches a
-mistake in repr.rs but not the backend moving underneath it.
+tests pin those constants against the adapters under `examples/`, which
+catches a mistake in repr.rs but not the backend moving underneath it -- and
+those adapters are now the emitter's own output, so they agree with repr.rs by
+construction.
 
 So this compiles `checks/rocq/exports.v` with the real CertiRocq and reads the
 facts back off the result. The expected names are read out of repr.rs rather

@@ -56,7 +56,7 @@ asserts each code is mentioned here.
 | [`bindgen/src/emit/`](bindgen/src/emit) | the emitters: `rocq.rs`, `adapter.rs`, `build.rs`, each a pure function of the plan |
 | [`bindgen/wit/certirocq-abi.wit`](bindgen/wit/certirocq-abi.wit) | the shipped `error` enum every export returns |
 | [`bindgen/tests/wit/{good,bad}`](bindgen/tests/wit) | one fixture per accepted and rejected construct |
-| [`examples/`](examples) | hand-written references for the pipeline: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), [`record`](examples/record), [`variant`](examples/variant) (ahead of the gate), and the vendored [`wasi-http`](examples/wasi-http) WIT |
+| [`examples/`](examples) | the pipeline end to end: [`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus), [`record`](examples/record) (hand-written inputs, committed generated glue), [`variant`](examples/variant) (ahead of the gate, so still hand-written throughout), and the vendored [`wasi-http`](examples/wasi-http) WIT |
 | [`checks/`](checks) | the checks `nix flake check` runs that aren't `cargo test` |
 | [`flake.nix`](flake.nix) | the toolchain, the generator package, and every check CI runs |
 
@@ -136,7 +136,7 @@ the checks pin it in layers:
 - `checks.smoke` assembles each example into a component and checks what
   `wasmtime` answers.
 - `checks.generated` generates for each example's world and requires the
-  hand-written glue token for token, then runs the generated component.
+  committed glue byte for byte, then runs the generated component.
 - `checks.roundtrip` composes each conversion in both orders under `wasmtime`,
   exercising the direction function imports will need.
 - `checks.backend` compiles a world per representation with the real CertiRocq,
@@ -150,9 +150,9 @@ the checks pin it in layers:
   written out, so a fourth representation fails here until a case exists for
   it as a parameter and as a result.
 
-The remaining gap is a hand-written `enum` example: `checks.generated` only
-parses the `enum` adapter it emits, while `checks.backend` covers it at run
-time. A third example would close that.
+The remaining gap is an `enum` example with a `stub/` to run against:
+`checks.generated` only parses the `enum` adapter it emits, while
+`checks.backend` covers it at run time. A third example would close that.
 
 ### <a id="table-export"></a>The backend exports the table
 
@@ -213,12 +213,12 @@ costs capacity, not correctness: the limit still arrives through the
 
 ## <a id="generated-examples"></a>Examples with generated glue
 
-`generate` reproduces [`plus1`](examples/plus1), [`negb`](examples/negb),
-[`minus`](examples/minus) and [`record`](examples/record) token for token, but
-the committed files remain the hand-written references and `checks.generated`
-compares against them. That is deliberate: the references are the independent
-oracle. Adapting the examples means adding one whose glue the tool writes — the
-target is a `wasi:http` 0.2.x proxy service:
+[`plus1`](examples/plus1), [`negb`](examples/negb), [`minus`](examples/minus)
+and [`record`](examples/record) already carry generated glue: the emitter
+reproduced what was hand-written for them, the committed copies were replaced
+with its output, and `checks.generated` fails if regenerating changes a byte.
+What they do not cover is a world nobody wrote the glue for first — the target
+is a `wasi:http` 0.2.x proxy service:
 
 ```wit
 world proxy {

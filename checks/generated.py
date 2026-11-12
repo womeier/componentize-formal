@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""Hold the generator to the hand-written examples, then run what it wrote.
+"""Hold the generator to the committed examples, then run what it wrote.
 
-The examples under `examples/` were written by hand first, built, and run
-before the generator existed. That makes them the one reference in this repo
-that is independent of the emitter -- so this check never regenerates them. It
-generates into a scratch directory and compares, in two directions that fail
-differently:
+The generated files under `examples/` are committed, so a change to the
+emitter shows up as a diff in the pull request that caused it rather than as
+output nobody sees. Keeping them committed only means something if they cannot
+go stale, which is this check's first half. It generates into a scratch
+directory and compares, in two directions that fail differently:
 
-  * **Same code.** Token for token, ignoring comments and line breaks, the
-    generated `interface.v`, `extraction.v` and `adapter.wat` must equal the
-    committed ones. Catches an offset, a constant or a discriminant that moved
-    -- the mistakes that produce a component which runs and lies.
+  * **Same bytes.** The generated `interface.v`, `extraction.v`, `adapter.wat`
+    and vendored `wit/deps` must equal the committed ones exactly -- comments
+    and line breaks included, because those are emitted too and drift in them
+    is still drift. Catches an offset, a constant or a discriminant that moved
+    -- the mistakes that produce a component which runs and lies -- and
+    catches a stale checkout.
+
+    `--update` rewrites the committed copies instead of comparing. That is the
+    only supported way to change them: edit the emitter, run it, commit the
+    diff.
   * **Same answers.** The generated adapter is swapped into the example and
     assembled against its `stub/`, and the component has to print exactly what
     `checks/smoke.py` says it prints. Catches the code being self-consistently
-    wrong.
+    wrong, which no byte comparison against the emitter's own output can.
+    This is the half with a reference the emitter did not produce: those
+    expected lines were measured before the generator existed.
 
 Also runs `make -n` over the generated build rules, which proves they parse and
 that every prerequisite resolves without needing Rocq.
@@ -33,6 +41,7 @@ one the rest of `nix flake check` tested:
 from __future__ import annotations
 
 import argparse
+import difflib
 import shutil
 import stat
 import subprocess
@@ -43,53 +52,44 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from smoke import EXPECTED, run_target  # noqa: E402
 
-# The generated files that have a hand-written counterpart to compare against.
-# The Makefile has none: the examples' own carries stub targets this tool has
-# no business emitting, so it is checked by `make -n` instead.
-COMPARED = ["interface.v", "extraction.v", "adapter.wat"]
+# The generated files committed into each example, compared byte for byte.
+#
+# `wit/deps` is in here because the generator vendors the `certirocq:abi`
+# package itself -- `generate()` below copies only `wit/world.wit` into the
+# scratch directory, so if the generator ever stopped writing the dependency
+# this comparison would fail rather than quietly pass on the copy.
+#
+# The Makefile is not, and is the one file in an example still written by
+# hand. The generator emits one, but the committed one carries the `run-stub`
+# targets `checks/smoke.py` drives, and emitting test scaffolding is not this
+# tool's job. The generated rules are checked by `make -n` instead.
+GENERATED = [
+    "interface.v",
+    "extraction.v",
+    "adapter.wat",
+    "wit/deps/certirocq-abi/errors.wit",
+]
 
-# Examples written ahead of the gate: hand-written, measured, and running, for
-# constructs `generate` still turns away. They have no generated counterpart to
-# compare against -- what is checked instead is that the generator *refuses*
-# them, with the code below. An example the gate silently accepted and emitted
+# Examples written ahead of the gate: hand-written throughout, measured, and
+# running, for constructs `generate` still turns away. They have no generated
+# counterpart to compare against -- what is checked instead is that the
+# generator *refuses* them, with the code below. An example the gate silently accepted and emitted
 # something for would be worse than one it rejects.
 AHEAD_OF_THE_GATE = {
     "variant": "E-STRUCTURED",
 }
 
 
-def tokens(text: str, comment: str) -> list[str]:
-    """The code, as whitespace-separated tokens with the comments dropped.
-
-    Comparing tokens rather than bytes is deliberate: prose and line breaks are
-    free to differ, and nothing else is. A `(* ... *)` block in Rocq is handled
-    by stripping from `(*` to `*)`; both languages here put comments on their
-    own lines in these files, so line-wise is enough and cannot swallow code.
-    """
-    out = []
-    in_rocq_comment = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if comment == "(*":
-            if in_rocq_comment:
-                in_rocq_comment = "*)" not in stripped
-                continue
-            if stripped.startswith("(*"):
-                in_rocq_comment = "*)" not in stripped
-                continue
-        elif stripped.startswith(comment):
-            continue
-        out.extend(stripped.split())
-    return out
-
-
-def comment_syntax(name: str) -> str:
-    return ";;" if name.endswith(".wat") else "(*"
-
-
 def generate(generator: Path, example: Path, into: Path) -> None:
-    """Generate for the example's world, into an otherwise empty directory."""
-    shutil.copytree(example / "wit", into / "wit")
+    """Generate for the example's world, into an otherwise empty directory.
+
+    Only the *inputs* are copied -- the world and the config. Everything else
+    an example holds is either generated here or irrelevant to generating, and
+    copying a generated file in first would let the comparison that follows
+    pass on the copy.
+    """
+    (into / "wit").mkdir()
+    shutil.copy(example / "wit/world.wit", into / "wit/world.wit")
     shutil.copy(example / "component.toml", into / "component.toml")
     result = subprocess.run(
         [str(generator), "generate", "--config", str(into / "component.toml")],
@@ -142,27 +142,22 @@ def check_example(generator: Path, example: Path) -> list[str]:
         out.mkdir()
         generate(generator, example, out)
 
-        for name in COMPARED:
+        for name in GENERATED:
             want = example / name
             got = out / name
             if not got.exists():
                 problems.append(f"{example.name}: nothing generated at {name}")
                 continue
-            syntax = comment_syntax(name)
-            if tokens(want.read_text(), syntax) != tokens(got.read_text(), syntax):
+            if want.read_bytes() != got.read_bytes():
                 problems.append(
-                    f"{example.name}: the generated {name} is not the code the "
-                    f"hand-written one is"
+                    f"{example.name}: the committed {name} is not what the "
+                    f"generator writes today. If the emitter changed on "
+                    f"purpose, run `checks/generated.py --update` and commit "
+                    f"the diff."
                 )
-                problems.extend(
-                    f"  {line}"
-                    for line in diff(
-                        tokens(want.read_text(), syntax),
-                        tokens(got.read_text(), syntax),
-                    )
-                )
+                problems.extend(f"  {line}" for line in unified(want, got))
         if not problems:
-            print(f"generated: {example.name} emits the reference code", flush=True)
+            print(f"generated: {example.name} matches the committed output", flush=True)
 
         # `make -n` wants the files the rules mention, which is everything
         # generated plus the implementation the user writes.
@@ -193,17 +188,43 @@ def check_example(generator: Path, example: Path) -> list[str]:
     return problems
 
 
-def diff(want: list[str], got: list[str]) -> list[str]:
-    """The first few places the two token streams part ways."""
-    lines = []
-    for i, (a, b) in enumerate(zip(want, got)):
-        if a != b:
-            lines.append(f"token {i}: hand-written `{a}`, generated `{b}`")
-            if len(lines) == 3:
-                break
-    if not lines:
-        lines.append(f"hand-written has {len(want)} tokens, generated {len(got)}")
-    return lines
+def unified(want: Path, got: Path) -> list[str]:
+    """The first few lines the committed and generated files part ways on."""
+    lines = difflib.unified_diff(
+        want.read_text().splitlines(),
+        got.read_text().splitlines(),
+        fromfile="committed",
+        tofile="generated",
+        lineterm="",
+        n=1,
+    )
+    return [line for line in lines if line.strip()][:12]
+
+
+def update(generator: Path, example: Path) -> None:
+    """Rewrite the example's committed copies with what the generator emits."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "gen"
+        out.mkdir()
+        generate(generator, example, out)
+        for name in GENERATED:
+            source = out / name
+            if not source.exists():
+                raise SystemExit(
+                    f"generated: nothing generated at {name} for "
+                    f"{example.name}, so there is nothing to update it with."
+                )
+            target = example / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            changed = (
+                not target.exists() or target.read_bytes() != source.read_bytes()
+            )
+            shutil.copy(source, target)
+            print(
+                f"generated: {'wrote' if changed else 'unchanged'} "
+                f"{example.name}/{name}",
+                flush=True,
+            )
 
 
 def check_refused(generator: Path, example: Path, code: str) -> list[str]:
@@ -318,6 +339,11 @@ def main() -> int:
         default=root / "bindgen/tests/wit/good",
         help="worlds the gate accepts, one per construct (default: %(default)s)",
     )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="rewrite the committed generated files instead of checking them",
+    )
     args = parser.parse_args()
 
     if not args.generator.exists():
@@ -333,6 +359,18 @@ def main() -> int:
             "checks/smoke.py does not know. An example nothing runs is an "
             "example that rots."
         )
+
+    if args.update:
+        for name in sorted(EXPECTED):
+            if name in AHEAD_OF_THE_GATE:
+                print(
+                    f"generated: {name} is refused by the gate, so it has no "
+                    "generated files to update",
+                    flush=True,
+                )
+                continue
+            update(args.generator, args.examples / name)
+        return 0
 
     problems: list[str] = []
     for name in sorted(EXPECTED):
@@ -351,15 +389,18 @@ def main() -> int:
 
     if problems:
         print(
-            "\ngenerated: the generator does not emit the reference adapters.",
+            "\ngenerated: the generator does not agree with the examples.",
             file=sys.stderr,
         )
         for problem in problems:
             print(f"generated: {problem}", file=sys.stderr)
         print(
-            "\nThe examples are hand-written and were run before the generator "
-            "existed, so they are the reference and this is the emitter's "
-            "mistake to fix. See TODO.md#representation.",
+            "\nA byte difference is either a deliberate emitter change -- run "
+            "`checks/generated.py --update` and commit the diff -- or drift "
+            "nobody meant. A wrong *answer* is neither: the expected lines in "
+            "checks/smoke.py were measured before the generator existed, so "
+            "they are the reference and this is the emitter's mistake to fix. "
+            "See TODO.md#representation.",
             file=sys.stderr,
         )
         return 1

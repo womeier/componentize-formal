@@ -1,12 +1,13 @@
-(* What `componentize-formal generate` emits from wit/world.wit.
+(* componentize-formal generate wrote this from the world `wrapper-world`.
  *
- * The world's signature, as a Module Type: `rocq c` checks the
- * implementation against it, so a mismatch is a type error in your file
+ * The world's signature as a Module Type, so `rocq c` checks your
+ * implementation against it: a mismatch is a type error in your file
  * rather than a component that misbehaves at run time.
  *
- * Note what is absent. `plus1` returns `result<u64, error>` in the world, and
- * `int -> int` here: out-of-memory and out-of-range belong to the adapter, and
- * a Rocq function has no way to produce either. *)
+ * Note what is absent. `plus1` returns result<u64, error> in the
+ * world and `int -> int` here. The ways the call can fail --
+ * out of memory, out of range (`val` >= 2^63) -- all belong to the adapter, and
+ * a Rocq function has no way to produce any of them. *)
 From Stdlib Require Import Uint63.
 
 Module Type WrapperWorld.

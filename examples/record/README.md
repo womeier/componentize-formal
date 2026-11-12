@@ -11,11 +11,11 @@ record span {
 export grow: func(s: span) -> result<span, error>;
 ```
 
-Everything here except `impl.v` was hand-written in the shape
+Everything here except `impl.v` was written by hand in the shape
 `componentize-formal generate` would have to emit, measured against the real
 backend, and run — before the gate accepted a `record` at all. The emitter has
-since caught up, and `checks/generated.py` holds it to these files token for
-token, so they are the reference rather than its output.
+since caught up, so the glue committed here is its output, held to the byte by
+`checks/generated.py`; see [`plus1`](../plus1) for which files those are.
 
 ```console
 $ nix develop
