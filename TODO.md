@@ -157,14 +157,13 @@ The remaining gap is an `enum` example with a `stub/` to run against:
 ### <a id="table-export"></a>The backend exports the table
 
 The adapter reaches the compiled closures through the backend's function table,
-exported as `table`. Released CertiRocq does not export it, so `flake.nix` pins
-`womeier/certirocq` at `wasm-export-table` head `546dd8a8`: upstream `main`
-plus the `MED_table` entry and its `ET_table` obligation. `rocq c` re-checks
-that obligation on every build, and `checks/representation.py` fails if the
-table is absent.
+exported as `table`. `flake.nix` pins upstream CertiRocq `main` at `ab66e016`,
+which includes the `MED_table` export and its `ET_table` proof obligation;
+no fork or generated-module patch is needed. `rocq c` re-checks that obligation
+on every build, and `checks/representation.py` fails if the table is absent.
 
-<a id="pinning"></a>The fork is pinned by revision, not branch name, so a rebase
-cannot silently change the tree. `main` needs local builds of WasmCert-Coq
+<a id="pinning"></a>CertiRocq is pinned by revision, not branch name, so upstream
+changes cannot silently change the tree. `main` needs local builds of WasmCert-Coq
 2.2.1 and MetaRocq's `9.1` branch; `flake.nix` carries both, with the two
 nixpkgs phases `main` moved.
 

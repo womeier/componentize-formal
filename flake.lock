@@ -3,17 +3,17 @@
     "certirocq": {
       "flake": false,
       "locked": {
-        "lastModified": 1793821760,
-        "narHash": "sha256-QsaGt3wbsPx/lux5PGHBro1nxpv+dWiTjTHmUWeaiYw=",
-        "owner": "womeier",
+        "lastModified": 1794945080,
+        "narHash": "sha256-xVe9PrHF9wYoXnRQ3ejkwkJexsRr1gX9PCCzMmV8WTo=",
+        "owner": "CertiRocq",
         "repo": "certirocq",
-        "rev": "546dd8a89f6fe15756b5b67176650bc8222e4ad4",
+        "rev": "ab66e0164e7ecb63e5af95c90c8e479068bf95c2",
         "type": "github"
       },
       "original": {
-        "owner": "womeier",
+        "owner": "CertiRocq",
         "repo": "certirocq",
-        "rev": "546dd8a89f6fe15756b5b67176650bc8222e4ad4",
+        "rev": "ab66e0164e7ecb63e5af95c90c8e479068bf95c2",
         "type": "github"
       }
     },
