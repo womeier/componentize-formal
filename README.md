@@ -40,6 +40,9 @@ $ componentize-formal generate --wit <file> --out-dir .
 Write impl.v implementing `Module Type WrapperWorld`, then `make` in .
 ```
 
+Do not use CertiRocq's `-cps` flag: the generated glue assumes direct-style
+compilation. CPS compilation would require (slightly) different glue code.
+
 ### Result type `result<T, error>`
 **All** exported functions need to return this exact `result<T, error>` type. (see the [`error` type](bindgen/wit/certirocq-abi.wit))
 For instance, in the following function the `u64` is mapped to Rocq's `UPrim63`, which can fail if the input number doesn't fit.
