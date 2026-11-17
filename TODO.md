@@ -154,13 +154,10 @@ The remaining gap is an `enum` example with a `stub/` to run against:
 `checks.generated` only parses the `enum` adapter it emits, while
 `checks.backend` covers it at run time. A third example would close that.
 
-### <a id="table-export"></a>The backend exports the table
+### <a id="table-export"></a>Backend requirements
 
-The adapter reaches the compiled closures through the backend's function table,
-exported as `table`. `flake.nix` pins upstream CertiRocq `main` at `ab66e016`,
-which includes the `MED_table` export and its `ET_table` proof obligation;
-no fork or generated-module patch is needed. `rocq c` re-checks that obligation
-on every build, and `checks/representation.py` fails if the table is absent.
+The adapter requires the backend's function table as `table`.
+`checks/representation.py` checks this contract.
 
 <a id="pinning"></a>CertiRocq is pinned by revision, not branch name, so upstream
 changes cannot silently change the tree. `main` needs local builds of WasmCert-Coq

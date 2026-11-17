@@ -10,10 +10,7 @@
     # Do not bump this to nixpkgs-unstable: any later revision rebuilds MetaRocq.
     nixpkgs.url = "github:NixOS/nixpkgs/fb9c9907f7655e040a5fedc979c80d386d7e7813";
 
-    # Upstream main exports the function table the adapter needs, including
-    # its instantiation proof; the nixpkgs release does not. Pin the revision
-    # so updates are explicit. Its newer MetaRocq and WasmCert dependencies
-    # still need the overrides below. See TODO.md#table-export.
+    # Pin upstream main by revision so updates are explicit.
     certirocq = {
       url = "github:CertiRocq/certirocq/ab66e0164e7ecb63e5af95c90c8e479068bf95c2";
       flake = false;
