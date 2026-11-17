@@ -10,36 +10,9 @@
     # Do not bump this to nixpkgs-unstable: any later revision rebuilds MetaRocq.
     nixpkgs.url = "github:NixOS/nixpkgs/fb9c9907f7655e040a5fedc979c80d386d7e7813";
 
-    # CertiRocq itself comes from here rather than from nixpkgs, because the
-    # adapter needs the generated module to export its function table and no
-    # CertiRocq release exports it -- nor does `main`, whose export list at
-    # `LambdaANF_to_Wasm.v:568` still ends at `MED_mem`. See
-    # TODO.md#table-export.
-    #
-    # `womeier/certirocq` at `wasm-export-table`, pinned to its head
-    # `546dd8a8`: upstream `main` (`943b52ae`) plus one commit, the eleven
-    # lines that add the export to `LambdaANF_to_Wasm.v` and discharge the
-    # extra `ET_table` obligation the instantiation proof then carries in
-    # `LambdaANF_to_Wasm_instantiation.v`. Nothing is admitted around, and
-    # `rocq c` re-checks the obligation on every build, so a rebase that
-    # invalidates the proof fails here loudly rather than silently dropping
-    # it.
-    #
-    # Pinned by revision, not by `wasm-export-table`: a branch pin would
-    # follow the next rebase on its own, which is how a tree that once
-    # compiled stops compiling with nothing in this file having changed.
-    #
-    # Rebased onto `main` rather than onto a release, because the release is
-    # 349 commits back and carries the old WasmCert and MetaRocq bounds with
-    # it. That is not free: `main` needs two dependencies newer than the
-    # nixpkgs pin has, so `rocqPkgs` below moves both and both become local
-    # builds -- WasmCert-Coq 2.2.1, which is short, and MetaRocq at the head
-    # of its `9.1` branch, which is hours. The comments there carry the
-    # evidence for each. Only CompCert and the rest of the Rocq set are still
-    # the cache hits `checks/cache_hits.py` speaks for, and that check says
-    # what it can no longer cover.
+    # Pin upstream main by revision so updates are explicit.
     certirocq = {
-      url = "github:womeier/certirocq/546dd8a89f6fe15756b5b67176650bc8222e4ad4";
+      url = "github:CertiRocq/certirocq/ab66e0164e7ecb63e5af95c90c8e479068bf95c2";
       flake = false;
     };
   };
@@ -146,23 +119,10 @@
         };
       });
 
-      # CertiRocq from the `certirocq` input with the table export patched in,
-      # built against the dependency set above: the build inputs, the Rocq
-      # version and the install layout are whatever the nixpkgs expression
-      # decided, and only the source moves.
-      #
-      # The source goes in through `version`, as the attribute form whose
-      # `fetcher` hands back the flake input, rather than through
-      # `overrideAttrs` on `src`. Two reasons. The nixpkgs expression derives
-      # its `defaultVersion` from `metarocq-erasure-plugin.version` and knows
-      # only `1.5.1-9.1`, so with MetaRocq moved to the branch head that
-      # lookup falls off the end and yields `broken` -- which `overrideAttrs`
-      # on `src` alone cannot undo, and the package then refuses to evaluate.
-      # Passing a `version` skips the lookup. And `mkCoqDerivation` builds
-      # `name` from the version it is given, so the store path reads
-      # `coq9.1-CertiRocq-wasm-export-table-546dd8a8`: a module that exports
-      # the table never shares a name with a released one that does not, which
-      # is the confusion this repo exists to avoid.
+      # Build upstream CertiRocq against the dependency set above. Passing the
+      # input through `version` also bypasses nixpkgs' defaultVersion lookup,
+      # which does not recognize the newer MetaRocq version, and gives the
+      # package a name identifying its source revision.
       #
       # The phases need two corrections on top of that, both because the
       # nixpkgs expression describes the release's tree and `main`'s is
@@ -199,7 +159,7 @@
         in
         (scope.CertiRocq.override {
           version = {
-            version = "wasm-export-table-546dd8a8";
+            version = "main-ab66e016";
             fetcher = _: certirocq;
           };
         }).overrideAttrs (old: {
@@ -271,7 +231,7 @@
       };
     in {
       packages = forAllSystems (pkgs: rec {
-        certirocq = certirocqFor pkgs;               # main + the table export (546dd8a8)
+        certirocq = certirocqFor pkgs;               # upstream main at ab66e016
         metarocq = (rocqPkgs pkgs).metarocq;          # 9.1 branch at 51b14e4b
         compcert = (rocqPkgs pkgs).compcert;          # 3.17
 
